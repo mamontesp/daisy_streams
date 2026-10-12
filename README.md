@@ -81,12 +81,13 @@ Every state checkpoint strictly adheres to the JSON contract:
 # 1. Clone repository and initialize environment variables
 cp .env.example .env
 
-# 2. Start all services (Garage, Apache Kafka, PostgreSQL, and Snowflake Adapter)
-docker compose up -d garage kafka postgres snowflake-adapter
+# 2. Start all services (Garage, Kafka, Kafka UI, PostgreSQL, and Snowflake Adapter)
+docker compose up -d garage kafka kafka-ui postgres snowflake-adapter
 
-# 3. Monitor services independently
+# 3. Monitor services independently (and open Kafka UI at http://localhost:8080)
 docker compose logs -f snowflake-adapter
 docker compose logs -f garage
+docker compose logs -f kafka-ui
 
 # 4. Run change simulation to generate verifiable INSERTs and UPDATEs
 python services/snowflake_adapter/scripts/simulate_changes.py --dry-run
@@ -110,6 +111,12 @@ docker compose logs -f snowflake-adapter
 
 # Follow live Garage S3 logs
 docker compose logs -f garage
+
+# Follow live Kafka UI logs
+docker compose logs -f kafka-ui
+
+# Access Kafka UI in browser:
+# http://localhost:8080
 
 # Check Garage cluster status directly via entrypoint binary
 docker exec daisy-garage /garage status
@@ -171,10 +178,15 @@ In adherence to the core platform constraint—**"Each service should live in it
 
 ```
 daisy_streams/
-├── docker-compose.yml          # Multi-service topology (minio, kafka, snowflake-adapter, ...)
+├── docker-compose.yml          # Multi-service topology (garage, kafka, kafka-ui, ...)
 ├── Makefile                    # High-level developer targets
 ├── .env.example                # Unified configuration template
 └── services/
+    ├── garage/                 # Garage S3 object storage service config
+    │   ├── garage.toml
+    │   └── README.md
+    ├── kafka_ui/               # Kafka UI web dashboard documentation
+    │   └── README.md
     └── snowflake_adapter/      # Dedicated Snowflake Adapter service folder
         ├── Dockerfile          # Independent container image definition
         ├── requirements.txt    # Service dependencies

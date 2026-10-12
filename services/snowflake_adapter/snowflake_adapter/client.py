@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from pathlib import Path
 from typing import Any, Optional, Protocol
 from snowflake_adapter.logging import get_logger
 
@@ -48,13 +49,31 @@ def load_private_key_bytes(
 
     key_bytes: bytes
     if path:
-        with open(path, "rb") as f:
+        target_path = Path(path)
+        if not target_path.exists():
+            for alt in (
+                Path("/secrets") / target_path.name,
+                Path("/app/secrets") / target_path.name,
+                Path("secrets") / target_path.name,
+            ):
+                if alt.exists():
+                    target_path = alt
+                    break
+        with open(target_path, "rb") as f:
             key_bytes = f.read()
     else:
         assert content is not None
         key_bytes = content.strip().encode("utf-8")
 
-    password_bytes = passphrase.encode("utf-8") if passphrase else None
+    clean_passphrase = None
+    if passphrase:
+        p_str = passphrase.strip().strip("'\"")
+        if " #" in p_str:
+            p_str = p_str.split(" #")[0].strip().strip("'\"")
+        if p_str:
+            clean_passphrase = p_str
+
+    password_bytes = clean_passphrase.encode("utf-8") if clean_passphrase else None
 
     private_key = serialization.load_pem_private_key(
         key_bytes,
