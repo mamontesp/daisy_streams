@@ -1,0 +1,104 @@
+services:
+  # Garage S3 Distributed Object Storage Service (Sync State Persistence Backend)
+  garage:
+    image: dxflrs/garage:v2.4.1
+    container_name: daisy-garage
+    command: ["/garage", "server", "--single-node", "--default-bucket"]
+    environment:
+      - RUST_LOG=garage=info
+      - GARAGE_DEFAULT_ACCESS_KEY=${GARAGE_ACCESS_KEY:-GKdaisystreamskey01234}
+      - GARAGE_DEFAULT_SECRET_KEY=${GARAGE_SECRET_KEY:-daisystreamssecretkey0123456789abcdef0123456789abcdef}
+      - GARAGE_DEFAULT_BUCKET=${GARAGE_BUCKET:-daisy-state}
+    ports:
+      - "3900:3900"   # S3 API
+      - "3901:3901"   # RPC
+      - "3902:3902"   # Web
+      - "3903:3903"   # Admin API
+    volumes:
+      - ./services/garage/garage.toml:/etc/garage.toml:ro
+      - garage_meta:/var/lib/garage/meta
+      - garage_data:/var/lib/garage/data
+    healthcheck:
+      test: ["CMD", "/garage", "status"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+    networks:
+      - daisy-network
+
+  # Apache Kafka Streaming Broker (Official Apache Kafka in KRaft mode)
+  kafka:
+    image: apache/kafka:3.7.0
+    container_name: daisy-kafka
+    ports:
+      - "9092:9092"
+    environment:
+      KAFKA_NODE_ID: 1
+      KAFKA_PROCESS_ROLES: broker,controller
+      KAFKA_LISTENERS: PLAINTEXT://:29092,EXTERNAL://:9092,CONTROLLER://:9093
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:29092,EXTERNAL://localhost:9092
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: PLAINTEXT:PLAINTEXT,EXTERNAL:PLAINTEXT,CONTROLLER:PLAINTEXT
+      KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
+      KAFKA_CONTROLLER_QUORUM_VOTERS: 1@kafka:9093
+      KAFKA_INTER_BROKER_LISTENER_NAME: PLAINTEXT
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
+      KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS: 0
+    volumes:
+      - kafka_data:/var/lib/kafka/data
+    networks:
+      - daisy-network
+
+  # PostgreSQL Sink Store (Part C Materialization)
+  postgres:
+    image: postgres:15-alpine
+    container_name: daisy-postgres
+    environment:
+      - POSTGRES_DB=${POSTGRES_DB:-daisy_streams}
+      - POSTGRES_USER=${POSTGRES_USER:-postgres}
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD:-postgres}
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    networks:
+      - daisy-network
+
+  # Snowflake Ingestion Adapter Service (Part A)
+  snowflake-adapter:
+    build:
+      context: ./services/snowflake_adapter
+      dockerfile: Dockerfile
+    container_name: daisy-snowflake-adapter
+    env_file:
+      - .env
+    environment:
+      - GARAGE_ENDPOINT=garage:3900
+      - SYNC_STATE_STORAGE=garage
+      - KAFKA_BOOTSTRAP_SERVERS=kafka:29092
+    depends_on:
+      garage:
+        condition: service_healthy
+      kafka:
+        condition: service_started
+    volumes:
+      - ./secrets:/app/secrets:ro
+    command: ["python", "scripts/run_adapter.py", "--loop", "--interval-sec", "30"]
+    restart: unless-stopped
+    networks:
+      - daisy-network
+
+volumes:
+  garage_meta:
+    driver: local
+  garage_data:
+    driver: local
+  kafka_data:
+    driver: local
+  pgdata:
+    driver: local
+
+networks:
+  daisy-network:
+    driver: bridge
