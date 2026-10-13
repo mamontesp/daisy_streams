@@ -106,8 +106,11 @@ class SnowflakeAdapter:
         table: Optional[str] = None,
         batch_size: Optional[int] = None,
         join_customer: bool = True,
+        full_refresh: bool = False,
+        topic: Optional[str] = None,
+        state_key: Optional[str] = None,
     ) -> SyncResult:
-        """Execute a synchronization run (initial bounded or incremental delta)."""
+        """Execute a synchronization run (initial bounded, incremental delta, or full refresh)."""
         source_table = table or self.settings.snowflake_table
         batch_id = str(uuid4())
         correlation_batch_id.set(batch_id)
@@ -116,19 +119,30 @@ class SnowflakeAdapter:
         schema = self.settings.snowflake_schema
         watermark_col = self.settings.snowflake_watermark_column
         entity_key_col = self.settings.snowflake_entity_key_column
+        partition_col = self.settings.snowflake_partition_key_column
 
-        # 1. Load prior state
-        prior_state = self.state_store.load_state(source_table)
-        prior_watermark = prior_state.last_watermark if prior_state else None
-        cumulative_synced = prior_state.records_synced if prior_state else 0
-        is_initial = prior_watermark is None
+        effective_state_key = (state_key or source_table).lower()
+
+        # 1. Load prior state (or bypass for full refresh)
+        if full_refresh:
+            logger.info("Full refresh requested for %s. Bypassing prior state checkpoint.", source_table)
+            prior_state = None
+            prior_watermark = None
+            cumulative_synced = 0
+            is_initial = True
+        else:
+            prior_state = self.state_store.load_state(effective_state_key)
+            prior_watermark = prior_state.last_watermark if prior_state else None
+            cumulative_synced = prior_state.records_synced if prior_state else 0
+            is_initial = prior_watermark is None
 
         logger.info(
-            "Initiating sync for table %s (batch_id: %s, mode: %s, prior_watermark: %s)",
+            "Initiating sync for table %s (batch_id: %s, mode: %s, prior_watermark: %s, topic: %s)",
             source_table,
             batch_id,
-            "INITIAL" if is_initial else "INCREMENTAL",
+            "FULL_REFRESH" if full_refresh else ("INITIAL" if is_initial else "INCREMENTAL"),
             prior_watermark,
+            topic or self.settings.kafka_topic,
         )
 
         # 2. Build and execute SQL query
@@ -142,6 +156,7 @@ class SnowflakeAdapter:
                 table=source_table,
                 watermark_column=watermark_col,
                 entity_key_column=entity_key_col,
+                partition_key_column=partition_col,
                 limit=limit,
                 join_customer=join_customer,
             )
@@ -154,6 +169,7 @@ class SnowflakeAdapter:
                 table=source_table,
                 watermark_column=watermark_col,
                 entity_key_column=entity_key_col,
+                partition_key_column=partition_col,
                 limit=limit,
                 join_customer=join_customer,
             )
@@ -188,8 +204,27 @@ class SnowflakeAdapter:
         last_entity_key: Optional[str] = None
 
         for row in raw_rows:
-            key_val = row.get(entity_key_col) or row.get(entity_key_col.lower()) or row.get("ORDER_ID")
+            key_val = (
+                row.get(entity_key_col)
+                or row.get(entity_key_col.lower())
+                or row.get("O_CUSTKEY")
+                or row.get("o_custkey")
+                or row.get("C_CUSTKEY")
+                or row.get("c_custkey")
+                or row.get("ORDER_ID")
+            )
             entity_key = str(key_val) if key_val is not None else str(uuid4())
+
+            part_val = (
+                row.get(partition_col)
+                or row.get(partition_col.lower())
+                or row.get("O_CUSTKEY")
+                or row.get("o_custkey")
+                or row.get("C_CUSTKEY")
+                or row.get("c_custkey")
+                or row.get("CUSTOMER_ID")
+            )
+            partition_key = str(part_val) if part_val is not None else entity_key
 
             wm_raw = row.get(watermark_col) or row.get(watermark_col.lower()) or row.get("UPDATED_AT")
             occurred_dt = _parse_watermark_to_datetime(wm_raw)
@@ -210,13 +245,14 @@ class SnowflakeAdapter:
                 event_type=event_type,  # type: ignore[arg-type]
                 source=source_id,
                 entity_key=entity_key,
+                partition_key=partition_key,
                 payload=payload,
                 occurred_at=occurred_dt,
             )
             envelopes.append(envelope)
 
         # 5. Publish batch to streaming transport
-        self.producer.publish_batch(envelopes)
+        self.producer.publish_batch(envelopes, topic=topic)
         self.producer.flush()
 
         # 6. Format new watermark
@@ -225,7 +261,7 @@ class SnowflakeAdapter:
 
         # 7. Checkpoint state
         new_state = SyncState(
-            source_table=source_table.lower(),
+            source_table=effective_state_key,
             last_watermark=current_watermark_str,
             last_batch_id=batch_id,
             last_synced_at=datetime.now(timezone.utc).isoformat(),

@@ -45,6 +45,7 @@ services:
       KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
       KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
       KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS: 0
+      KAFKA_NUM_PARTITIONS: 6
     volumes:
       - kafka_data:/var/lib/kafka/data
     networks:
@@ -78,6 +79,12 @@ services:
       - "5432:5432"
     volumes:
       - pgdata:/var/lib/postgresql/data
+      - ./services/postgres/init.sql:/docker-entrypoint-initdb.d/init.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER:-postgres} -d $${POSTGRES_DB:-daisy_streams}"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
     networks:
       - daisy-network
 
@@ -93,6 +100,8 @@ services:
       - GARAGE_ENDPOINT=garage:3900
       - SYNC_STATE_STORAGE=garage
       - KAFKA_BOOTSTRAP_SERVERS=kafka:29092
+      - SNOWFLAKE_ENTITY_KEY_COLUMN=O_CUSTKEY
+      - SNOWFLAKE_PARTITION_KEY_COLUMN=O_CUSTKEY
     depends_on:
       garage:
         condition: service_healthy
@@ -102,6 +111,31 @@ services:
       - ./secrets:/secrets:ro
       - ./secrets:/app/secrets:ro
     command: ["python", "scripts/run_adapter.py", "--loop", "--interval-sec", "30"]
+    restart: unless-stopped
+    networks:
+      - daisy-network
+
+  # Event Consumer Service (Part C Streaming Ingestion)
+  consumer:
+    build:
+      context: .
+      dockerfile: ./services/consumer/Dockerfile
+    container_name: daisy-consumer
+    env_file:
+      - .env
+    environment:
+      - KAFKA_BOOTSTRAP_SERVERS=kafka:29092
+      - KAFKA_TOPIC=${KAFKA_TOPIC:-switch.orders.events}
+      - POSTGRES_HOST=postgres
+      - POSTGRES_PORT=5432
+      - POSTGRES_DB=${POSTGRES_DB:-daisy_streams}
+      - POSTGRES_USER=${POSTGRES_USER:-postgres}
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD:-postgres}
+    depends_on:
+      kafka:
+        condition: service_started
+      postgres:
+        condition: service_healthy
     restart: unless-stopped
     networks:
       - daisy-network

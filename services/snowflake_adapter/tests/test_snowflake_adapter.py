@@ -189,3 +189,71 @@ def test_ac_a04_crash_restart_resumes_from_persisted_watermark(
     assert res2.total_records_synced == 10001
     assert len(memory_producer.events) == 1
     assert memory_producer.events[0].entity_key == "88888"
+
+
+def test_adapter_extracts_partition_key_o_custkey(
+    test_settings: Settings,
+    sample_orders_dataset: list[dict],
+    minio_state_store: MinioStateStore,
+    memory_producer: InMemoryEventProducer,
+) -> None:
+    """Verify adapter populates partition_key with O_CUSTKEY."""
+    client = MockSnowflakeClient(initial_records=sample_orders_dataset)
+    adapter = SnowflakeAdapter(
+        settings=test_settings,
+        client=client,
+        state_store=minio_state_store,
+        producer=memory_producer,
+    )
+
+    result = adapter.run_sync(table="ORDERS", batch_size=10000)
+    assert result.records_captured == 10000
+    assert len(memory_producer.events) == 10000
+
+    for ev in memory_producer.events:
+        assert ev.entity_key is not None
+        assert ev.partition_key is not None
+        assert ev.partition_key == str(ev.payload.get("O_CUSTKEY"))
+
+
+def test_adapter_blue_green_migration_and_full_refresh(
+    test_settings: Settings,
+    sample_orders_dataset: list[dict],
+    minio_state_store: MinioStateStore,
+    memory_producer: InMemoryEventProducer,
+) -> None:
+    """Verify blue/green migration topic isolation and full refresh."""
+    client = MockSnowflakeClient(initial_records=sample_orders_dataset)
+    adapter = SnowflakeAdapter(
+        settings=test_settings,
+        client=client,
+        state_store=minio_state_store,
+        producer=memory_producer,
+    )
+
+    # 1. Normal sync on v1
+    res1 = adapter.run_sync(table="ORDERS", batch_size=10000)
+    assert res1.records_captured == 10000
+    state_v1 = minio_state_store.load_state("orders")
+    assert state_v1 is not None
+
+    memory_producer.clear()
+
+    # 2. Blue/Green full refresh on v2
+    res2 = adapter.run_sync(
+        table="ORDERS",
+        batch_size=10000,
+        full_refresh=True,
+        topic="switch.orders.events.v2",
+        state_key="orders_v2",
+    )
+    assert res2.is_initial_sync is True
+    assert res2.records_captured == 10000
+    assert len(memory_producer.events) == 10000
+
+    # Verify state isolation: v1 state was unaffected, v2 state created
+    state_v2 = minio_state_store.load_state("orders_v2")
+    assert state_v2 is not None
+    assert state_v1.source_table == "orders"
+    assert state_v2.source_table == "orders_v2"
+

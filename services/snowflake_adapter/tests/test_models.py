@@ -107,3 +107,19 @@ def test_sync_state_serialization_roundtrip() -> None:
     assert recovered.last_batch_id == state.last_batch_id
     assert recovered.records_synced == state.records_synced
     assert recovered.last_entity_key == state.last_entity_key
+
+
+def test_event_envelope_partition_key() -> None:
+    """Verify EventEnvelope supports partition_key routing field."""
+    envelope = EventEnvelope(
+        event_type="insert",
+        source="snowflake.tpch.orders",
+        entity_key="1001",
+        partition_key="500",
+        payload={"order_id": 1001, "cust_id": 500},
+        occurred_at=datetime.now(timezone.utc),
+    )
+    assert envelope.partition_key == "500"
+    parsed = json.loads(envelope.model_dump_json())
+    assert parsed["partition_key"] == "500"
+    assert parsed["entity_key"] == "1001"

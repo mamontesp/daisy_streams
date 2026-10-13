@@ -9,6 +9,7 @@ def build_initial_sync_query(
     table: str,
     watermark_column: str = "O_ORDERDATE",
     entity_key_column: str = "O_ORDERKEY",
+    partition_key_column: str = "O_CUSTKEY",
     limit: int = 50000,
     join_customer: bool = True,
 ) -> str:
@@ -25,6 +26,7 @@ SELECT
     o.O_CLERK,
     o.O_SHIPPRIORITY,
     o.O_COMMENT,
+    c.C_CUSTKEY,
     c.C_NAME,
     c.C_PHONE,
     c.C_ACCTBAL,
@@ -50,6 +52,7 @@ def build_incremental_sync_query(
     table: str,
     watermark_column: str = "O_ORDERDATE",
     entity_key_column: str = "O_ORDERKEY",
+    partition_key_column: str = "O_CUSTKEY",
     limit: int = 10000,
     join_customer: bool = True,
 ) -> str:
@@ -66,6 +69,7 @@ SELECT
     o.O_CLERK,
     o.O_SHIPPRIORITY,
     o.O_COMMENT,
+    c.C_CUSTKEY,
     c.C_NAME,
     c.C_PHONE,
     c.C_ACCTBAL,

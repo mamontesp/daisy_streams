@@ -42,6 +42,9 @@ def main() -> None:
     parser.add_argument("--interval-sec", type=int, default=30, help="Interval between sync iterations in loop mode")
     parser.add_argument("--mock", action="store_true", help="Run with in-memory mock Snowflake data")
     parser.add_argument("--storage", choices=["garage", "minio", "local"], default=None, help="State storage backend (garage | minio | local)")
+    parser.add_argument("--topic", default=None, help="Target Kafka topic (e.g., switch.orders.events.v2)")
+    parser.add_argument("--full-refresh", action="store_true", help="Bypass prior watermark and perform full initial refresh")
+    parser.add_argument("--state-key", default=None, help="Isolated state persistence key (default: based on table or custom topic)")
 
     args = parser.parse_args()
 
@@ -51,10 +54,12 @@ def main() -> None:
     storage_mode = args.storage or ("local" if args.mock else settings.sync_state_storage)
 
     logger.info(
-        "Starting Snowflake Adapter service (table: %s, storage: %s, loop: %s)",
+        "Starting Snowflake Adapter service (table: %s, storage: %s, loop: %s, topic: %s, full_refresh: %s)",
         args.table or settings.snowflake_table,
         storage_mode,
         args.loop,
+        args.topic or settings.kafka_topic,
+        args.full_refresh,
     )
 
     client = None
@@ -98,12 +103,24 @@ def main() -> None:
         logger.error("Failed to initialize SnowflakeAdapter: %s", e)
         sys.exit(1)
 
+    # Determine isolated state key if topic override is specified
+    default_state_key = args.state_key
+    if not default_state_key and args.topic:
+        clean_topic_suffix = args.topic.replace(".", "_").replace("-", "_")
+        default_state_key = f"{args.table or settings.snowflake_table}_{clean_topic_suffix}"
+
+    first_run = True
     while _running:
         try:
+            should_full_refresh = args.full_refresh if first_run else False
             result = adapter.run_sync(
                 table=args.table,
                 batch_size=args.batch_size,
+                full_refresh=should_full_refresh,
+                topic=args.topic,
+                state_key=default_state_key,
             )
+            first_run = False
             logger.info(
                 "Sync cycle finished: %d records captured, current watermark: %s",
                 result.records_captured,
