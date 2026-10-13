@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
-from typing import Any, Literal
+from typing import Any, Literal, Optional
 from uuid import UUID, uuid4
 from pydantic import BaseModel, Field
 
@@ -15,6 +15,9 @@ class EventEnvelope(BaseModel):
     event_type: Literal["insert", "update"] = Field(description="Operation type")
     source: str = Field(description="Source system identifier (e.g., snowflake.tpch.orders)")
     entity_key: str = Field(description="Entity primary key identifier (e.g., order_id)")
+    partition_key: Optional[str] = Field(
+        default=None, description="Partitioning routing key for streaming transport (e.g., O_CUSTKEY)"
+    )
     payload: dict[str, Any] = Field(description="Row payload contents")
     occurred_at: datetime = Field(description="Timestamp when event occurred at source")
     captured_at: datetime = Field(

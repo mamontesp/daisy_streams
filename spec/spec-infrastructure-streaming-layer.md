@@ -3,16 +3,16 @@ title: Part B - Streaming Layer
 version: 1.0
 date_created: 2026-10-12
 category: infrastructure
-tags: [infrastructure, streaming, kafka, redpanda, envelope]
+tags: [infrastructure, streaming, kafka]
 ---
 
 # Part B — Streaming Layer
 
 ## 1. Scope & Objective
-Transport captured change records as partitioned events through Kafka/Redpanda using a standardized event envelope with retry tolerance.
+Transport captured change records as partitioned events through Kafka using a standardized event envelope with retry tolerance.
 
 ## 2. Requirements
-- **REQ-B01 (Broker Topology)**: Single-node Kafka or Redpanda deployed via Docker Compose.
+- **REQ-B01 (Broker Topology)**: Single-node Kafka or  deployed via Docker Compose.
 - **REQ-B02 (Topic & Partitioning)**: At least one topic (`switch.orders.events`). Partitioning key must be entity key (`order_id`) to preserve per-entity ordering.
 - **REQ-B03 (Event Envelope)**: Explicit envelope enforced by Pydantic model.
 - **REQ-B04 (Broker Fault Tolerance)**: Producer must handle transient broker downtime with exponential backoff retries. Zero silent data loss.

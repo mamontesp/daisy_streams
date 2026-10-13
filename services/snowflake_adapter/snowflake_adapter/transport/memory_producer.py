@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from typing import Optional
 from snowflake_adapter.logging import get_logger
 from snowflake_adapter.models.envelope import EventEnvelope
 
@@ -14,15 +15,15 @@ class InMemoryEventProducer:
     def __init__(self) -> None:
         self.events: list[EventEnvelope] = []
 
-    def publish(self, envelope: EventEnvelope) -> None:
+    def publish(self, envelope: EventEnvelope, topic: Optional[str] = None) -> None:
         """Record an event envelope in memory."""
         self.events.append(envelope)
-        logger.debug("Captured event %s for entity %s", envelope.event_id, envelope.entity_key)
+        logger.debug("Captured event %s for entity %s (topic: %s)", envelope.event_id, envelope.entity_key, topic)
 
-    def publish_batch(self, envelopes: list[EventEnvelope]) -> int:
+    def publish_batch(self, envelopes: list[EventEnvelope], topic: Optional[str] = None) -> int:
         """Record batch of event envelopes in memory."""
         self.events.extend(envelopes)
-        logger.debug("Captured batch of %d events in memory", len(envelopes))
+        logger.debug("Captured batch of %d events in memory (topic: %s)", len(envelopes), topic)
         return len(envelopes)
 
     def flush(self, timeout: float = 10.0) -> None:

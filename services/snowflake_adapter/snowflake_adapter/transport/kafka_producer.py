@@ -63,16 +63,18 @@ class KafkaEventProducer:
                 msg.offset(),
             )
 
-    def publish(self, envelope: EventEnvelope) -> None:
+    def publish(self, envelope: EventEnvelope, topic: Optional[str] = None) -> None:
         """Publish a single envelope with exponential backoff on broker buffer/connection errors."""
-        key_bytes = str(envelope.entity_key).encode("utf-8")
+        target_topic = topic or self.topic
+        routing_key = envelope.partition_key if envelope.partition_key is not None else envelope.entity_key
+        key_bytes = str(routing_key).encode("utf-8")
         value_bytes = envelope.model_dump_json().encode("utf-8")
 
         delay = self.initial_backoff_sec
         for attempt in range(1, self.max_retries + 1):
             try:
                 self._producer.produce(
-                    topic=self.topic,
+                    topic=target_topic,
                     key=key_bytes,
                     value=value_bytes,
                     on_delivery=self._delivery_callback,
@@ -105,11 +107,11 @@ class KafkaEventProducer:
             f"Failed to publish event {envelope.event_id} after {self.max_retries} attempts."
         )
 
-    def publish_batch(self, envelopes: list[EventEnvelope]) -> int:
+    def publish_batch(self, envelopes: list[EventEnvelope], topic: Optional[str] = None) -> int:
         """Publish a batch of envelopes, returning number of events submitted."""
         count = 0
         for envelope in envelopes:
-            self.publish(envelope)
+            self.publish(envelope, topic=topic)
             count += 1
         self.flush()
         return count

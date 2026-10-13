@@ -37,7 +37,8 @@ class Settings(BaseSettings):
     snowflake_schema: str = Field(default="ingestion", alias="SNOWFLAKE_SCHEMA")
     snowflake_table: str = Field(default="ORDERS", alias="SNOWFLAKE_TABLE")
     snowflake_watermark_column: str = Field(default="O_ORDERDATE", alias="SNOWFLAKE_WATERMARK_COLUMN")
-    snowflake_entity_key_column: str = Field(default="O_ORDERKEY", alias="SNOWFLAKE_ENTITY_KEY_COLUMN")
+    snowflake_entity_key_column: str = Field(default="O_CUSTKEY", alias="SNOWFLAKE_ENTITY_KEY_COLUMN")
+    snowflake_partition_key_column: str = Field(default="O_CUSTKEY", alias="SNOWFLAKE_PARTITION_KEY_COLUMN")
 
     # Ingestion / Sync Settings
     sync_batch_size: int = Field(default=10000, alias="SYNC_BATCH_SIZE")
