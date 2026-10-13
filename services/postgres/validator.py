@@ -2,14 +2,16 @@
 
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass
 from datetime import datetime
 from typing import Any, Optional, Union
 from uuid import UUID
 from pydantic import ValidationError
 
-from snowflake_adapter.models.envelope import EventEnvelope
-from services.postgres.models import ErrorCode, OrderPayload
+from services.postgres.models import ErrorCode, EventEnvelope, OrderPayload
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -103,7 +105,8 @@ def validate_event(
     if event_id_checker is not None:
         try:
             is_duplicate = event_id_checker(envelope.event_id)
-        except Exception:
+        except Exception as exc:
+            logger.warning("Duplicate event ID checker encountered error: %s", exc)
             is_duplicate = False
 
         if is_duplicate:

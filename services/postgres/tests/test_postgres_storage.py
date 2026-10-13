@@ -14,7 +14,7 @@ from pathlib import Path
 from uuid import uuid4
 
 import pytest
-from snowflake_adapter.models.envelope import EventEnvelope
+from services.postgres.models import EventEnvelope
 from services.postgres.repository import PostgresRepository
 
 
@@ -245,3 +245,18 @@ def test_init_sql_ddl_and_settings() -> None:
     assert "idx_event_log_event_id" in content
     assert "idx_current_state_last_occurred" in content
     assert "idx_quarantined_error_code" in content
+
+
+def test_postgres_db_adapts_dict_params_to_jsonb() -> None:
+    """Verify PostgresDB._format_params adapts dict parameters to Jsonb for JSONB columns."""
+    from services.postgres.db import PostgresDB
+    from psycopg.types.json import Jsonb
+
+    db = PostgresDB()
+    test_params = ("order-123", {"O_ORDERKEY": 123, "O_TOTALPRICE": 500.0}, "2026-10-12T00:00:00Z")
+    formatted = db._format_params(test_params)
+    assert formatted is not None
+    assert formatted[0] == "order-123"
+    assert isinstance(formatted[1], Jsonb)
+    assert formatted[1].obj == {"O_ORDERKEY": 123, "O_TOTALPRICE": 500.0}
+    assert formatted[2] == "2026-10-12T00:00:00Z"

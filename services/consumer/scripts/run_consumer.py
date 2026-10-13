@@ -13,12 +13,11 @@ from uuid import uuid4
 # Ensure project root is on sys.path
 ROOT_DIR = Path(__file__).resolve().parent.parent.parent.parent
 sys.path.insert(0, str(ROOT_DIR))
-sys.path.insert(0, str(ROOT_DIR / "services" / "snowflake_adapter"))
 sys.path.insert(0, str(ROOT_DIR / "services" / "postgres"))
 
-from snowflake_adapter.logging import configure_logging, get_logger
 from services.consumer.consumer.config import ConsumerSettings
 from services.consumer.consumer.consumer import KafkaConsumerService
+from services.consumer.consumer.logging import configure_logging, get_logger
 from services.postgres.repository import PostgresRepository
 
 logger = get_logger("daisy.consumer")
@@ -155,6 +154,7 @@ def main() -> int:
 
     logger.info("Initializing Kafka Consumer Service for topic '%s'", settings.kafka_topic)
 
+    mock_consumer_instance: Optional[MockKafkaConsumer] = None
     if args.mock:
         logger.info("Running in mock mode with synthetic messages.")
         count = args.max_messages or 5

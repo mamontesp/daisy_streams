@@ -7,7 +7,7 @@ import signal
 from typing import Any, Optional
 from uuid import UUID
 
-from snowflake_adapter.logging import (
+from services.consumer.consumer.logging import (
     correlation_event_id,
     get_logger,
 )

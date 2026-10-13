@@ -3,18 +3,18 @@
 from __future__ import annotations
 
 import json
+import logging
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Optional, Union
 from uuid import UUID
 
-from snowflake_adapter.logging import get_logger
-from snowflake_adapter.models.envelope import EventEnvelope
 from services.postgres.db import BaseDB, PostgresDB, SQLiteTestDB, get_db
 from services.postgres.models import (
     CurrentStateRecord,
     EntityHistoryResponse,
     ErrorCode,
+    EventEnvelope,
     EventLogRecord,
     EventsQueryResponse,
     IngestionResult,
@@ -26,14 +26,19 @@ from services.postgres.models import (
 )
 from services.postgres.validator import validate_event, ValidationResult
 
-logger = get_logger(__name__)
+logger = logging.getLogger(__name__)
 
 
 class PostgresRepository:
     """Encapsulates all PostgreSQL data persistence, idempotent materialization, and queries."""
 
-    def __init__(self, db: Optional[BaseDB] = None) -> None:
+    def __init__(self, db: Optional[BaseDB] = None, auto_init_schema: bool = True) -> None:
         self.db = db if db is not None else get_db()
+        if auto_init_schema and not isinstance(self.db, SQLiteTestDB):
+            try:
+                self.init_schema()
+            except Exception as exc:
+                logger.warning("Database schema auto-init warning: %s", exc)
 
     def init_schema(self, ddl_path: Optional[str] = None) -> None:
         """Execute init.sql DDL to create tables and indexes."""
@@ -54,11 +59,15 @@ class PostgresRepository:
 
     def check_event_exists(self, event_id: UUID) -> bool:
         """Check whether an event_id already exists in event_log (for DQ-3)."""
-        row = self.db.fetchone(
-            "SELECT 1 AS exists_flag FROM event_log WHERE event_id = %s LIMIT 1",
-            (event_id,),
-        )
-        return row is not None
+        try:
+            row = self.db.fetchone(
+                "SELECT 1 AS exists_flag FROM event_log WHERE event_id = %s LIMIT 1",
+                (event_id,),
+            )
+            return row is not None
+        except Exception as exc:
+            logger.warning("Error checking duplicate event_id %s: %s", event_id, exc)
+            return False
 
     def append_event_log(
         self,
