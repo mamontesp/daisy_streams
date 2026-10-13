@@ -15,10 +15,9 @@ RUN pip install --no-cache-dir -r requirements.txt
 
 # Copy required service modules
 COPY services/postgres/ ./services/postgres/
-COPY services/snowflake_adapter/snowflake_adapter/ ./services/snowflake_adapter/snowflake_adapter/
 COPY services/consumer/ ./services/consumer/
 
-ENV PYTHONPATH=/app:/app/services/snowflake_adapter \
+ENV PYTHONPATH=/app \
     PYTHONUNBUFFERED=1
 
 CMD ["python", "services/consumer/scripts/run_consumer.py", "--loop"]

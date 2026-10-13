@@ -10,7 +10,6 @@ import pytest
 # Ensure root and service paths are on sys.path
 ROOT_DIR = Path(__file__).resolve().parent.parent.parent.parent
 sys.path.insert(0, str(ROOT_DIR))
-sys.path.insert(0, str(ROOT_DIR / "services" / "snowflake_adapter"))
 sys.path.insert(0, str(ROOT_DIR / "services" / "postgres"))
 sys.path.insert(0, str(ROOT_DIR / "services" / "consumer"))
 

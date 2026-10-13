@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from services.postgres.models.entity_history_response import EntityHistoryResponse
 from services.postgres.models.enums import ErrorCode
+from services.postgres.models.event_envelope import EventEnvelope
 from services.postgres.models.events_query_response import EventsQueryResponse
 from services.postgres.models.ingestion_result import IngestionResult
 from services.postgres.models.lag_metrics import LagMetrics
@@ -15,6 +16,7 @@ from services.postgres.models.stats_response import StatsResponse
 
 __all__ = [
     "ErrorCode",
+    "EventEnvelope",
     "OrderPayload",
     "OrdersAppendLog",
     "OrdersCurrentState",

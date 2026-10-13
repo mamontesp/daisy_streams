@@ -8,7 +8,6 @@ import pytest
 
 # Ensure services directories are on PYTHONPATH
 ROOT_DIR = Path(__file__).resolve().parent.parent.parent.parent
-sys.path.insert(0, str(ROOT_DIR / "services" / "snowflake_adapter"))
 sys.path.insert(0, str(ROOT_DIR))
 
 from services.postgres.db import SQLiteTestDB

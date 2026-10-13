@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from typing import Any, List
-from snowflake_adapter.logging import get_logger
+from services.consumer.consumer.logging import get_logger
 
 logger = get_logger(__name__)
 

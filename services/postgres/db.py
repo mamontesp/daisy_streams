@@ -10,19 +10,28 @@ from datetime import datetime, timezone
 from typing import Any, Generator, Optional, Sequence, Union
 from uuid import UUID
 
-from snowflake_adapter.logging import get_logger
+import logging
+
 from services.postgres.config import PostgresSettings
 
-logger = get_logger(__name__)
+logger = logging.getLogger(__name__)
 
 try:
     import psycopg
     from psycopg.rows import dict_row
+    from psycopg.types.json import Jsonb, JsonbDumper
+
     PSYCOPG_AVAILABLE = True
+    try:
+        psycopg.adapters.register_dumper(dict, JsonbDumper)
+    except Exception:
+        pass
 except ImportError:
     PSYCOPG_AVAILABLE = False
     psycopg = None
     dict_row = None
+    Jsonb = None
+    JsonbDumper = None
 
 
 class BaseDB:
@@ -53,14 +62,32 @@ class PostgresDB(BaseDB):
         self._conn: Optional[Any] = None
 
     def connect(self) -> Any:
-        """Establish connection with dict_row factory."""
+        """Establish connection with dict_row factory and autocommit."""
         if self._conn is None or self._conn.closed:
             self._conn = psycopg.connect(
                 self.uri,
                 row_factory=dict_row,
+                autocommit=True,
                 connect_timeout=self.settings.postgres_connect_timeout,
             )
+            if JsonbDumper is not None:
+                try:
+                    self._conn.adapters.register_dumper(dict, JsonbDumper)
+                except Exception:
+                    pass
         return self._conn
+
+    def _format_params(self, params: Optional[Sequence[Any]]) -> Optional[Sequence[Any]]:
+        """Ensure dict payloads are wrapped in Jsonb for PostgreSQL."""
+        if not params:
+            return params
+        formatted: list[Any] = []
+        for p in params:
+            if isinstance(p, dict):
+                formatted.append(Jsonb(p) if Jsonb is not None else json.dumps(p))
+            else:
+                formatted.append(p)
+        return tuple(formatted)
 
     @contextmanager
     def transaction(self) -> Generator[Any, None, None]:
@@ -73,24 +100,40 @@ class PostgresDB(BaseDB):
     def execute(self, query: str, params: Optional[Sequence[Any]] = None) -> Any:
         """Execute query within auto-commit or immediate transaction."""
         conn = self.connect()
-        with conn.cursor() as cur:
-            res = cur.execute(query, params or ())
-            conn.commit()
-            return res
+        try:
+            with conn.cursor() as cur:
+                res = cur.execute(query, self._format_params(params) or ())
+                if not conn.autocommit:
+                    conn.commit()
+                return res
+        except Exception:
+            if not conn.autocommit:
+                conn.rollback()
+            raise
 
     def fetchone(self, query: str, params: Optional[Sequence[Any]] = None) -> Optional[dict[str, Any]]:
         """Execute and fetch a single dict row."""
         conn = self.connect()
-        with conn.cursor() as cur:
-            cur.execute(query, params or ())
-            return cur.fetchone()
+        try:
+            with conn.cursor() as cur:
+                cur.execute(query, self._format_params(params) or ())
+                return cur.fetchone()
+        except Exception:
+            if not conn.autocommit:
+                conn.rollback()
+            raise
 
     def fetchall(self, query: str, params: Optional[Sequence[Any]] = None) -> list[dict[str, Any]]:
         """Execute and fetch all dict rows."""
         conn = self.connect()
-        with conn.cursor() as cur:
-            cur.execute(query, params or ())
-            return cur.fetchall()
+        try:
+            with conn.cursor() as cur:
+                cur.execute(query, self._format_params(params) or ())
+                return cur.fetchall()
+        except Exception:
+            if not conn.autocommit:
+                conn.rollback()
+            raise
 
     def close(self) -> None:
         """Close connection if active."""
@@ -171,7 +214,9 @@ class SQLiteTestDB(BaseDB):
         formatted_params: list[Any] = []
         if params:
             for p in params:
-                if isinstance(p, (dict, list)):
+                if hasattr(p, "obj"):
+                    formatted_params.append(json.dumps(p.obj))
+                elif isinstance(p, (dict, list)):
                     formatted_params.append(json.dumps(p))
                 elif isinstance(p, UUID):
                     formatted_params.append(str(p))
