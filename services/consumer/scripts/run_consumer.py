@@ -201,6 +201,10 @@ def main() -> int:
         return 1
     finally:
         consumer_service.close()
+        from services.consumer.consumer.logging import get_s3_log_handler
+        s3_handler = get_s3_log_handler()
+        if s3_handler is not None:
+            s3_handler.close()
 
 
 if __name__ == "__main__":

@@ -8,6 +8,7 @@
 CREATE TABLE IF NOT EXISTS event_log (
     id BIGSERIAL PRIMARY KEY,
     event_id UUID NOT NULL,
+    batch_id VARCHAR(64),
     event_type VARCHAR(32) NOT NULL,
     source VARCHAR(128) NOT NULL,
     entity_key VARCHAR(128) NOT NULL,
@@ -20,6 +21,7 @@ CREATE TABLE IF NOT EXISTS event_log (
 );
 
 CREATE INDEX IF NOT EXISTS idx_event_log_event_id ON event_log (event_id);
+CREATE INDEX IF NOT EXISTS idx_event_log_batch_id ON event_log (batch_id);
 CREATE INDEX IF NOT EXISTS idx_event_log_entity_key ON event_log (entity_key);
 CREATE INDEX IF NOT EXISTS idx_event_log_event_type ON event_log (event_type);
 CREATE INDEX IF NOT EXISTS idx_event_log_occurred_at ON event_log (occurred_at);

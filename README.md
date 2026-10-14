@@ -131,6 +131,78 @@ docker compose restart snowflake-adapter
 
 ---
 
+## Structured Logging & Correlation Traceability
+
+Daisy Streams implements production-grade structured JSON logging and end-to-end distributed correlation tracking across all pipeline components, satisfying **Part D — Engineering Hygiene**:
+
+```
++---------------------------------------------------------------------------------------------------------+
+|                                    End-to-End Correlation Pipeline                                      |
++---------------------------------------------------------------------------------------------------------+
+|                                                                                                         |
+|  [Snowflake Adapter]                                                                                    |
+|    - Generates batch_id (UUIDv4) per sync cycle                                                         |
+|    - Emits structured JSON logs to stdout & buffers for S3                                               |
+|    - Packages EventEnvelope with batch_id & event_id                                                    |
+|                                     |                                                                   |
+|                                     v Kafka Headers: [("batch_id", ...), ("event_id", ...)]             |
+|                                       Kafka Payload: {"batch_id": "...", "event_id": "...", ...}        |
+|                                                                                                         |
+|  [Kafka Streaming Broker]                                                                               |
+|    - Transports partition-keyed messages (O_CUSTKEY) with correlation headers                           |
+|                                     |                                                                   |
+|                                     v                                                                   |
+|                                                                                                         |
+|  [Consumer Service]                                                                                     |
+|    - Extracts batch_id & event_id from payload / headers                                                |
+|    - ContextVars (correlation_batch_id, correlation_event_id) inject IDs into all consumer logs         |
+|    - Scoped try/finally lifecycle resets ContextVars to prevent leakage across messages                 |
+|                                     |                                                                   |
+|                  +------------------+------------------+                                                |
+|                  |                                     |                                                |
+|                  v                                     v                                                |
+|       [PostgreSQL Sink]                      [Garage S3 Log Storage]                                    |
+|       - event_log.batch_id                   - Bucket: `daisy-logs`                                     |
+|       - event_log.event_id                   - JSON Lines (.jsonl) archives                             |
+|       - current_state.latest_event_id        - Partitioned: `service/year=Y/month=M/day=D/batch_*.jsonl`|
+|                                                                                                         |
++---------------------------------------------------------------------------------------------------------+
+```
+
+### How the Logging System Works
+
+1. **Structured JSON Format**: Every Python service (`snowflake_adapter`, `consumer`, `api`) formats logs as single-line JSON objects containing `timestamp` (UTC ISO 8601), `level`, `logger`, `message`, `batch_id`, `event_id`, and stack traces.
+2. **Dual-Destination Architecture**:
+   - **Console (`sys.stdout`)**: Real-time streaming for developer visibility via `docker compose logs -f <service>` or local CLIs.
+   - **Persistent Object Storage (`Garage S3`)**: Handled by the shared [`services.common.s3_log_handler.S3BufferedLogHandler`](file:///Users/andreamontes_p/Documents/goswitch/daisy_streams/services/common/s3_log_handler.py). Logs are buffered in memory and flushed as JSON Lines (`.jsonl`) files into the `daisy-logs` bucket in Garage S3.
+3. **Flushing & Archival Strategy**:
+   - **Adapter**: Flushes sync execution logs atomically per batch: `snowflake-adapter/year=YYYY/month=MM/day=DD/batch_{batch_id}_{timestamp}.jsonl`.
+   - **Consumer & API**: Flushes on time interval (e.g., 30s), buffer threshold (e.g., 50 records), or graceful container shutdown (`SIGTERM`/`SIGINT`).
+4. **Resilience & Zero-Crash Guarantee**: The S3 log handler is non-blocking. If Garage is temporarily restarting, upload warnings are routed to stderr without disrupting or crashing the message ingestion pipeline. Bucket creation is self-healing (`_ensure_bucket_exists`).
+
+### Tracing a Batch Through the System
+
+You can trace any synchronization cycle end-to-end across the entire stack:
+1. **Find `batch_id` in Adapter Logs or S3**:
+   ```bash
+   docker compose logs snowflake-adapter | grep "batch_id"
+   # or list archived batch logs in Garage:
+   # s3://daisy-logs/snowflake-adapter/year=2026/month=10/day=14/batch_<batch_id>_*.jsonl
+   ```
+2. **Trace `batch_id` in Consumer Logs**:
+   ```bash
+   docker compose logs consumer | grep "<batch_id>"
+   ```
+3. **Audit in PostgreSQL**:
+   ```sql
+   SELECT event_id, entity_key, event_type, occurred_at, processed_at
+   FROM event_log
+   WHERE batch_id = '<your-batch-id>'
+   ORDER BY id ASC;
+   ```
+
+---
+
 ## Spec-Driven Development (SDD) Compliance
 
 This project strictly adheres to **Spec-Driven Development (SDD)**:
@@ -174,7 +246,7 @@ openssl rsa -in rsa_key.p8 -pubout -out rsa_key.pub
 
 ## Service Directory Structure
 
-In adherence to the core platform constraint—**"Each service should live in its own folder"**—the Snowflake Adapter is completely self-contained within `services/snowflake_adapter/`:
+In adherence to the core platform constraint—**"Each service should live in its own folder"**—all pipeline components and shared utilities maintain modular boundaries within `services/`:
 
 ```
 daisy_streams/
@@ -182,32 +254,40 @@ daisy_streams/
 ├── Makefile                    # High-level developer targets
 ├── .env.example                # Unified configuration template
 └── services/
+    ├── common/                 # Shared S3 buffered logging handler & cross-service utilities
+    │   ├── __init__.py
+    │   ├── s3_log_handler.py   # S3BufferedLogHandler (Garage S3 batch & interval flushing)
+    │   └── tests/
     ├── garage/                 # Garage S3 object storage service config
     │   ├── garage.toml
     │   └── README.md
     ├── kafka_ui/               # Kafka UI web dashboard documentation
     │   └── README.md
-    └── snowflake_adapter/      # Dedicated Snowflake Adapter service folder
-        ├── Dockerfile          # Independent container image definition
-        ├── requirements.txt    # Service dependencies
-        ├── pyproject.toml      # Service build & test config
-        ├── snowflake_adapter/  # Core service package
-        │   ├── adapter.py      # Watermark tracking & delta extraction
-        │   ├── client.py       # Snowflake connector & mock client
-        │   ├── config.py       # Pydantic Settings
-        │   ├── logging.py      # Structured JSON correlation logging
-        │   ├── queries.py      # Monotonic SQL queries
-        │   ├── models/         # EventEnvelope (REQ-B03), SyncState
-        │   ├── state/          # MinIO (S3) & local file stores
-        │   └── transport/      # Kafka producer with exponential retry
-        ├── scripts/
-        │   ├── run_adapter.py      # Service entrypoint CLI (--loop, --mock)
-        │   └── simulate_changes.py # REQ-A06 change simulation CLI
-        └── tests/                  # Service automated test suite
-            ├── test_snowflake_adapter.py
-            ├── test_models.py
-            ├── test_state_store.py
-            └── test_simulate_changes.py
+    ├── snowflake_adapter/      # Dedicated Snowflake Adapter ingestion service (Part A)
+    │   ├── Dockerfile          # Independent container image definition
+    │   ├── requirements.txt    # Service dependencies
+    │   ├── pyproject.toml      # Service build & test config
+    │   ├── snowflake_adapter/  # Core service package (watermark tracking, delta extraction)
+    │   ├── scripts/            # Service entrypoint CLI (--loop, --mock) & simulation
+    │   └── tests/              # Service automated test suite
+    ├── consumer/               # Kafka Consumer streaming ingestion service (Part C)
+    │   ├── Dockerfile
+    │   ├── requirements.txt
+    │   ├── consumer/           # Consumer loop, manual offset commit, DQ checks, offset-0 replay
+    │   ├── scripts/            # Consumer runner CLI
+    │   └── tests/
+    ├── postgres/               # PostgreSQL schema, models, and dual-table repository (Part C)
+    │   ├── init.sql            # DDL for event_log, current_state, quarantined_events
+    │   ├── db.py               # Database connections (Postgres & SQLite in-memory test DB)
+    │   ├── repository.py       # Atomic ingestion, monotonic upserts, query repository
+    │   ├── models/             # Decoupled Pydantic domain models
+    │   └── tests/
+    └── api/                    # FastAPI event inspection service (Part C)
+        ├── Dockerfile
+        ├── requirements.txt
+        ├── api/                # FastAPI app, routes (/events, /stats, /healthz), middleware
+        ├── scripts/            # API runner CLI
+        └── tests/
 ```
 
 ---

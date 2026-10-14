@@ -14,6 +14,7 @@ COPY services/api/requirements.txt ./
 RUN pip install --no-cache-dir -r requirements.txt
 
 # Copy required service modules
+COPY services/common/ ./services/common/
 COPY services/postgres/ ./services/postgres/
 COPY services/api/ ./services/api/
 

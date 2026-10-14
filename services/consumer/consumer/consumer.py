@@ -8,6 +8,7 @@ from typing import Any, Optional
 from uuid import UUID
 
 from services.consumer.consumer.logging import (
+    correlation_batch_id,
     correlation_event_id,
     get_logger,
 )
@@ -105,31 +106,47 @@ class KafkaConsumerService:
             logger.error("JSON deserialization error for Kafka message: %s", exc)
             raw_event = {"raw_malformed_string": str(raw_bytes)}
 
-        # Extract correlation ID if present
+        # Extract correlation IDs from payload or Kafka headers
         ev_id_str = raw_event.get("event_id") if isinstance(raw_event, dict) else None
-        if ev_id_str:
-            correlation_event_id.set(str(ev_id_str))
+        batch_id_str = raw_event.get("batch_id") if isinstance(raw_event, dict) else None
 
-        # Atomic PostgreSQL ingestion
-        result = self.repo.ingest_event(raw_event)
+        if hasattr(msg, "headers") and msg.headers():
+            for h_key, h_val in msg.headers():
+                if h_key == "event_id" and not ev_id_str and h_val:
+                    ev_id_str = h_val.decode("utf-8") if isinstance(h_val, bytes) else str(h_val)
+                elif h_key == "batch_id" and not batch_id_str and h_val:
+                    batch_id_str = h_val.decode("utf-8") if isinstance(h_val, bytes) else str(h_val)
 
-        # Commit Kafka offset after successful write to Postgres
+        token_ev = correlation_event_id.set(str(ev_id_str)) if ev_id_str else None
+        token_batch = correlation_batch_id.set(str(batch_id_str)) if batch_id_str else None
+
         try:
-            if hasattr(self._consumer, "commit"):
-                self._consumer.commit(message=msg, asynchronous=False)
-        except Exception as commit_err:
-            logger.error("Failed to commit offset for event %s: %s", result.event_id, commit_err)
-            raise
+            # Atomic PostgreSQL ingestion
+            result = self.repo.ingest_event(raw_event)
 
-        logger.info(
-            "Processed message from %s [%s] @ offset %s -> status=%s (event_id=%s)",
-            getattr(msg, "topic", lambda: self.settings.kafka_topic)(),
-            getattr(msg, "partition", lambda: 0)(),
-            getattr(msg, "offset", lambda: 0)(),
-            result.status,
-            result.event_id,
-        )
-        return result
+            # Commit Kafka offset after successful write to Postgres
+            try:
+                if hasattr(self._consumer, "commit"):
+                    self._consumer.commit(message=msg, asynchronous=False)
+            except Exception as commit_err:
+                logger.error("Failed to commit offset for event %s: %s", result.event_id, commit_err)
+                raise
+
+            logger.info(
+                "Processed message from %s [%s] @ offset %s -> status=%s (event_id=%s, batch_id=%s)",
+                getattr(msg, "topic", lambda: self.settings.kafka_topic)(),
+                getattr(msg, "partition", lambda: 0)(),
+                getattr(msg, "offset", lambda: 0)(),
+                result.status,
+                result.event_id,
+                batch_id_str,
+            )
+            return result
+        finally:
+            if token_ev is not None:
+                correlation_event_id.reset(token_ev)
+            if token_batch is not None:
+                correlation_batch_id.reset(token_batch)
 
     def consume_loop(
         self,

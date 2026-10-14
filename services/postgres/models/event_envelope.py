@@ -12,6 +12,7 @@ class EventEnvelope(BaseModel):
     """Standard event envelope for streaming transport between Kafka and PostgreSQL."""
 
     event_id: UUID = Field(default_factory=uuid4, description="Unique event identifier (UUIDv4)")
+    batch_id: Optional[str] = Field(default=None, description="Sync run batch correlation ID")
     event_type: Literal["insert", "update"] = Field(description="Operation type")
     source: str = Field(description="Source system identifier (e.g., snowflake.tpch.orders)")
     entity_key: str = Field(description="Entity primary key identifier (e.g., order_id)")

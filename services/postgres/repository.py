@@ -79,12 +79,13 @@ class PostgresRepository:
         self.db.execute(
             """
             INSERT INTO event_log (
-                event_id, event_type, source, entity_key, partition_key,
+                event_id, batch_id, event_type, source, entity_key, partition_key,
                 payload, occurred_at, captured_at, processed_at, schema_version
-            ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+            ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
             """,
             (
                 envelope.event_id,
+                envelope.batch_id,
                 envelope.event_type,
                 envelope.source,
                 envelope.entity_key,
@@ -98,6 +99,7 @@ class PostgresRepository:
         )
         return OrdersAppendLog(
             event_id=envelope.event_id,
+            batch_id=envelope.batch_id,
             event_type=envelope.event_type,
             source=envelope.source,
             entity_key=envelope.entity_key,

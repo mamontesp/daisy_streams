@@ -194,3 +194,57 @@ def test_consumer_consume_loop_max_messages(
     processed = consumer_service.consume_loop(max_messages=4)
     assert processed == 4
     assert len(mock_kafka_consumer.committed_messages) == 4
+
+
+def test_consumer_batch_id_correlation_and_context_reset(
+    test_repo: PostgresRepository,
+) -> None:
+    """Verify consumer extracts batch_id from message and resets ContextVars after processing."""
+    from services.consumer.consumer.logging import correlation_batch_id, correlation_event_id
+
+    topic = "switch.orders.events"
+    settings = ConsumerSettings(KAFKA_TOPIC=topic)
+    batch_uuid = str(uuid4())
+    event_uuid = str(uuid4())
+
+    payload = {
+        "event_id": event_uuid,
+        "batch_id": batch_uuid,
+        "event_type": "insert",
+        "source": "snowflake.orders",
+        "entity_key": "ord-corr-1",
+        "partition_key": "cust-1",
+        "payload": {
+            "O_ORDERKEY": 9999,
+            "O_CUSTKEY": 1,
+            "O_TOTALPRICE": 350.0,
+            "O_ORDERSTATUS": "O",
+            "O_ORDERDATE": "2026-10-14",
+        },
+        "occurred_at": datetime.now(timezone.utc).isoformat(),
+        "captured_at": datetime.now(timezone.utc).isoformat(),
+        "schema_version": "1.0.0",
+    }
+    raw_bytes = json.dumps(payload).encode("utf-8")
+    mock_msg = MockKafkaMessage(value=raw_bytes, topic=topic, offset=0)
+    mock_consumer = MockKafkaConsumer(initial_messages=[mock_msg])
+
+    consumer_service = KafkaConsumerService(
+        settings=settings,
+        repo=test_repo,
+        consumer_instance=mock_consumer,
+    )
+
+    result = consumer_service.poll_and_process()
+    assert result is not None
+    assert result.status == "processed"
+    assert result.event_id == event_uuid
+
+    # Assert ContextVars are reset after processing (no leakage)
+    assert correlation_event_id.get() is None
+    assert correlation_batch_id.get() is None
+
+    # Assert database recorded batch_id
+    rows = test_repo.db.fetchall("SELECT batch_id FROM event_log WHERE event_id = %s", (event_uuid,))
+    assert len(rows) == 1
+    assert rows[0]["batch_id"] == batch_uuid

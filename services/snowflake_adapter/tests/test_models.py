@@ -64,6 +64,22 @@ def test_event_envelope_serialization() -> None:
     assert "captured_at" in parsed
 
 
+def test_event_envelope_batch_id_correlation() -> None:
+    """Verify EventEnvelope supports batch_id propagation across adapter and broker."""
+    batch_uuid = str(uuid4())
+    envelope = EventEnvelope(
+        batch_id=batch_uuid,
+        event_type="insert",
+        source="snowflake.tpch.orders",
+        entity_key="2001",
+        payload={"order_id": 2001},
+        occurred_at=datetime.now(timezone.utc),
+    )
+    assert envelope.batch_id == batch_uuid
+    parsed = json.loads(envelope.model_dump_json())
+    assert parsed["batch_id"] == batch_uuid
+
+
 def test_sync_state_contract_compliance() -> None:
     """Verify SyncState adheres strictly to Section 3 State Store Contract."""
     batch_id = str(uuid4())

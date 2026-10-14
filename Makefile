@@ -90,7 +90,10 @@ api:
 	$(PYTHON) services/api/scripts/run_api.py --reload
 
 test:
-	$(PYTEST) services/postgres/tests services/consumer/tests services/api/tests -v
+	$(PYTEST) services/common/tests services/postgres/tests services/consumer/tests services/api/tests -v
+
+test-common:
+	$(PYTEST) services/common/tests -v
 
 test-postgres:
 	$(PYTEST) services/postgres/tests -v
