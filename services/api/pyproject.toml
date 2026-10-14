@@ -1,0 +1,13 @@
+[project]
+name = "daisy-streams-api"
+version = "0.1.0"
+description = "FastAPI Event-Inspection Service for Daisy Streams PostgreSQL sink"
+requires-python = ">=3.9"
+
+[tool.pytest.ini_options]
+pythonpath = ["../../"]
+testpaths = ["tests"]
+python_files = ["test_*.py"]
+python_classes = ["Test*"]
+python_functions = ["test_*"]
+addopts = "-v --strict-markers"
