@@ -58,17 +58,17 @@ Conforms strictly to **REQ-C03**:
 
 ## 4. Modular Pydantic Models (`services/postgres/models/`)
 
-Each domain, database, and response model is defined in its own file:
+Event processing and storage models:
+- `bronze/`:
+  - `raw_event_log.py`: `RawEventLog` (`bronze.raw_event_log` table row).
+  - `raw_orders_log.py`: `RawOrdersLog` (`bronze.raw_orders_log` structured table row).
+  - `quarantined_event_log.py`: `QuarantinedEventLog` (`bronze.quarantined_event_log` DLQ row).
+- `silver/`:
+  - `stg_current_orders.py`: `StgCurrentOrders` (`silver.stg_current_orders` state table row).
+- `event_envelope.py`: `EventEnvelope` (Kafka event ingestion wrapper).
+- `order_payload.py`: `OrderPayload` (Snowflake payload validation and positive price check).
 - `enums.py`: `ErrorCode` (`SCHEMA_VIOLATION`, `BUSINESS_RULE_VIOLATION`, `DUPLICATE_EVENT_ID`).
-- `order_payload.py`: `OrderPayload` (with positive price validator).
-- `orders_append_log.py`: `OrdersAppendLog` (`event_log` table row).
-- `orders_current_state.py`: `OrdersCurrentState` (`current_state` table row).
-- `quarantined_event.py`: `QuarantinedEventRecord` (`quarantined_events` DLQ row).
 - `ingestion_result.py`: `IngestionResult` (atomic ingestion response).
-- `lag_metrics.py`: `LagMetrics` (average and peak ingestion lag).
-- `stats_response.py`: `StatsResponse` (GET `/stats` contract).
-- `events_query_response.py`: `EventsQueryResponse` (GET `/events` contract).
-- `entity_history_response.py`: `EntityHistoryResponse` (GET `/entities/{key}` contract).
 
 ---
 

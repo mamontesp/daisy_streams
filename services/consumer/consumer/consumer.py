@@ -76,10 +76,14 @@ class KafkaConsumerService:
         """Return the active topic configured via KAFKA_TOPIC."""
         return self.settings.kafka_topic
 
-    def poll_and_process(self, timeout: Optional[float] = None) -> Optional[IngestionResult]:
+    def poll_and_process(
+        self,
+        timeout: Optional[float] = None,
+        commit: bool = True,
+    ) -> Optional[IngestionResult]:
         """
         Poll a single message from Kafka, ingest it into PostgreSQL,
-        and commit the offset synchronously on success.
+        and optionally commit the offset synchronously on success.
         """
         poll_timeout = timeout if timeout is not None else self.settings.consumer_poll_timeout_sec
         msg = self._consumer.poll(timeout=poll_timeout)
@@ -124,13 +128,16 @@ class KafkaConsumerService:
             # Atomic PostgreSQL ingestion
             result = self.repo.ingest_event(raw_event)
 
-            # Commit Kafka offset after successful write to Postgres
-            try:
-                if hasattr(self._consumer, "commit"):
+            # Commit Kafka offset after successful write to Postgres if enabled
+            if commit and hasattr(self._consumer, "commit"):
+                try:
                     self._consumer.commit(message=msg, asynchronous=False)
-            except Exception as commit_err:
-                logger.error("Failed to commit offset for event %s: %s", result.event_id, commit_err)
-                raise
+                except Exception as commit_err:
+                    if "ILLEGAL_GENERATION" in str(commit_err) or "22" in str(commit_err):
+                        logger.warning("Commit skipped due to consumer group generation change: %s", commit_err)
+                    else:
+                        logger.error("Failed to commit offset for event %s: %s", result.event_id, commit_err)
+                        raise
 
             logger.info(
                 "Processed message from %s [%s] @ offset %s -> status=%s (event_id=%s, batch_id=%s)",
@@ -188,7 +195,7 @@ class KafkaConsumerService:
         consecutive_empty = 0
 
         while self._running:
-            result = self.poll_and_process(timeout=1.0)
+            result = self.poll_and_process(timeout=1.0, commit=False)
             if result is not None:
                 replayed_count += 1
                 consecutive_empty = 0

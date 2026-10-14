@@ -239,12 +239,42 @@ def test_init_sql_ddl_and_settings() -> None:
     ddl_path = Path(__file__).resolve().parent.parent / "init.sql"
     assert ddl_path.exists()
     content = ddl_path.read_text(encoding="utf-8")
-    assert "CREATE TABLE IF NOT EXISTS event_log" in content
-    assert "CREATE TABLE IF NOT EXISTS current_state" in content
-    assert "CREATE TABLE IF NOT EXISTS quarantined_events" in content
-    assert "idx_event_log_event_id" in content
-    assert "idx_current_state_last_occurred" in content
+    assert "CREATE TABLE IF NOT EXISTS bronze.raw_event_log" in content
+    assert "CREATE TABLE IF NOT EXISTS silver.stg_current_orders" in content
+    assert "CREATE TABLE IF NOT EXISTS bronze.quarantined_event_log" in content
+    assert "CREATE MATERIALIZED VIEW IF NOT EXISTS bronze.raw_orders_log" in content
+    assert "VIEW public.event_log" in content
+    assert "VIEW public.current_state" in content
+    assert "VIEW public.quarantined_events" in content
+    assert "idx_raw_event_log_event_id" in content
+    assert "idx_stg_current_orders_last_occurred" in content
     assert "idx_quarantined_error_code" in content
+
+
+def test_bronze_and_silver_structured_views(test_repo: PostgresRepository) -> None:
+    """Verify bronze.raw_orders_log and silver.stg_current_orders return unpacked, typed attributes."""
+    envelope = _make_envelope(entity_key="ord-structured-1", price=345.50)
+    result = test_repo.ingest_event(envelope)
+    assert result.status == "processed"
+
+    # 1. Query bronze.raw_orders_log
+    raw_orders = test_repo.get_raw_orders_log(entity_key="ord-structured-1")
+    assert len(raw_orders) == 1
+    ord_rec = raw_orders[0]
+    assert ord_rec.entity_key == "ord-structured-1"
+    assert ord_rec.total_price == 345.50
+    assert ord_rec.order_status == "O"
+
+    # 2. Test refresh_raw_orders_log (should run without error)
+    test_repo.refresh_raw_orders_log()
+
+    # 3. Query silver.stg_current_orders
+    stg_orders = test_repo.get_stg_current_orders()
+    matching = [s for s in stg_orders if s.entity_key == "ord-structured-1"]
+    assert len(matching) == 1
+    stg_rec = matching[0]
+    assert stg_rec.total_price == 345.50
+    assert stg_rec.order_status == "O"
 
 
 def test_postgres_db_adapts_dict_params_to_jsonb() -> None:
@@ -260,3 +290,4 @@ def test_postgres_db_adapts_dict_params_to_jsonb() -> None:
     assert isinstance(formatted[1], Jsonb)
     assert formatted[1].obj == {"O_ORDERKEY": 123, "O_TOTALPRICE": 500.0}
     assert formatted[2] == "2026-10-12T00:00:00Z"
+

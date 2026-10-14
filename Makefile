@@ -86,6 +86,9 @@ consume:
 consume-replay:
 	$(PYTHON) services/consumer/scripts/run_consumer.py --replay-offset-0
 
+consume-replay-docker:
+	docker compose run --rm consumer python services/consumer/scripts/run_consumer.py --replay-offset-0
+
 api:
 	$(PYTHON) services/api/scripts/run_api.py --reload
 

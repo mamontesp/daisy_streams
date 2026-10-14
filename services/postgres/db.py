@@ -152,10 +152,19 @@ class SQLiteTestDB(BaseDB):
         self._init_sqlite_schema()
 
     def _init_sqlite_schema(self) -> None:
-        """Initialize compatible tables in SQLite."""
+        """Initialize compatible tables in SQLite with bronze and silver schemas."""
         cur = self._conn.cursor()
+        try:
+            cur.execute("ATTACH DATABASE ':memory:' AS bronze;")
+        except Exception:
+            pass
+        try:
+            cur.execute("ATTACH DATABASE ':memory:' AS silver;")
+        except Exception:
+            pass
+
         cur.executescript("""
-        CREATE TABLE IF NOT EXISTS event_log (
+        CREATE TABLE IF NOT EXISTS bronze.raw_event_log (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             event_id TEXT NOT NULL,
             batch_id TEXT,
@@ -170,21 +179,12 @@ class SQLiteTestDB(BaseDB):
             schema_version TEXT NOT NULL DEFAULT '1.0.0'
         );
 
-        CREATE INDEX IF NOT EXISTS idx_event_log_event_id ON event_log (event_id);
-        CREATE INDEX IF NOT EXISTS idx_event_log_batch_id ON event_log (batch_id);
-        CREATE INDEX IF NOT EXISTS idx_event_log_entity_key ON event_log (entity_key);
-        CREATE INDEX IF NOT EXISTS idx_event_log_occurred_at ON event_log (occurred_at);
+        CREATE INDEX IF NOT EXISTS bronze.idx_raw_event_log_event_id ON raw_event_log (event_id);
+        CREATE INDEX IF NOT EXISTS bronze.idx_raw_event_log_batch_id ON raw_event_log (batch_id);
+        CREATE INDEX IF NOT EXISTS bronze.idx_raw_event_log_entity_key ON raw_event_log (entity_key);
+        CREATE INDEX IF NOT EXISTS bronze.idx_raw_event_log_occurred_at ON raw_event_log (occurred_at);
 
-        CREATE TABLE IF NOT EXISTS current_state (
-            entity_key TEXT PRIMARY KEY,
-            latest_event_id TEXT NOT NULL,
-            event_type TEXT NOT NULL,
-            state TEXT NOT NULL,
-            last_occurred_at TEXT NOT NULL,
-            last_updated_at TEXT NOT NULL DEFAULT (datetime('now'))
-        );
-
-        CREATE TABLE IF NOT EXISTS quarantined_events (
+        CREATE TABLE IF NOT EXISTS bronze.quarantined_event_log (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             event_id TEXT,
             entity_key TEXT,
@@ -193,6 +193,90 @@ class SQLiteTestDB(BaseDB):
             raw_payload TEXT NOT NULL,
             quarantined_at TEXT NOT NULL DEFAULT (datetime('now'))
         );
+
+        CREATE VIEW IF NOT EXISTS bronze.raw_orders_log AS
+        SELECT
+            id AS log_id,
+            event_id,
+            batch_id,
+            event_type,
+            source,
+            entity_key,
+            partition_key,
+            CAST(COALESCE(json_extract(payload, '$.O_ORDERKEY'), json_extract(payload, '$.order_key'), entity_key) AS INTEGER) AS order_key,
+            CAST(COALESCE(json_extract(payload, '$.O_CUSTKEY'), json_extract(payload, '$.cust_key'), partition_key) AS INTEGER) AS cust_key,
+            COALESCE(json_extract(payload, '$.O_ORDERSTATUS'), json_extract(payload, '$.order_status')) AS order_status,
+            CAST(COALESCE(json_extract(payload, '$.O_TOTALPRICE'), json_extract(payload, '$.total_price')) AS REAL) AS total_price,
+            COALESCE(json_extract(payload, '$.O_ORDERDATE'), json_extract(payload, '$.order_date')) AS order_date,
+            COALESCE(json_extract(payload, '$.O_ORDERPRIORITY'), json_extract(payload, '$.order_priority')) AS order_priority,
+            COALESCE(json_extract(payload, '$.O_CLERK'), json_extract(payload, '$.clerk')) AS clerk,
+            CAST(COALESCE(json_extract(payload, '$.O_SHIPPRIORITY'), json_extract(payload, '$.ship_priority')) AS INTEGER) AS ship_priority,
+            COALESCE(json_extract(payload, '$.O_COMMENT'), json_extract(payload, '$.comment')) AS comment,
+            json_extract(payload, '$.C_NAME') AS customer_name,
+            json_extract(payload, '$.C_PHONE') AS customer_phone,
+            CAST(json_extract(payload, '$.C_ACCTBAL') AS REAL) AS customer_acct_bal,
+            json_extract(payload, '$.C_MKTSEGMENT') AS customer_market_segment,
+            occurred_at,
+            captured_at,
+            processed_at,
+            schema_version
+        FROM raw_event_log;
+
+        CREATE TABLE IF NOT EXISTS silver.stg_current_orders (
+            entity_key TEXT PRIMARY KEY,
+            order_key INTEGER,
+            cust_key INTEGER,
+            order_status TEXT,
+            total_price REAL,
+            order_date TEXT,
+            order_priority TEXT,
+            clerk TEXT,
+            ship_priority INTEGER,
+            comment TEXT,
+            customer_name TEXT,
+            customer_phone TEXT,
+            customer_acct_bal REAL,
+            customer_market_segment TEXT,
+            latest_event_id TEXT NOT NULL,
+            event_type TEXT NOT NULL,
+            state TEXT NOT NULL,
+            last_occurred_at TEXT NOT NULL,
+            last_updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+        );
+
+        -- Backward compatibility views in default namespace
+        CREATE TEMP VIEW IF NOT EXISTS event_log AS SELECT * FROM bronze.raw_event_log;
+        CREATE TEMP VIEW IF NOT EXISTS current_state AS SELECT * FROM silver.stg_current_orders;
+        CREATE TEMP VIEW IF NOT EXISTS quarantined_events AS SELECT * FROM bronze.quarantined_event_log;
+
+        CREATE TRIGGER IF NOT EXISTS event_log_insert INSTEAD OF INSERT ON event_log
+        BEGIN
+            INSERT INTO bronze.raw_event_log (
+                event_id, batch_id, event_type, source, entity_key, partition_key,
+                payload, occurred_at, captured_at, processed_at, schema_version
+            ) VALUES (
+                NEW.event_id, NEW.batch_id, NEW.event_type, NEW.source, NEW.entity_key, NEW.partition_key,
+                NEW.payload, NEW.occurred_at, NEW.captured_at, COALESCE(NEW.processed_at, datetime('now')), COALESCE(NEW.schema_version, '1.0.0')
+            );
+        END;
+
+        CREATE TRIGGER IF NOT EXISTS current_state_insert INSTEAD OF INSERT ON current_state
+        BEGIN
+            INSERT INTO silver.stg_current_orders (
+                entity_key, latest_event_id, event_type, state, last_occurred_at, last_updated_at
+            ) VALUES (
+                NEW.entity_key, NEW.latest_event_id, NEW.event_type, NEW.state, NEW.last_occurred_at, COALESCE(NEW.last_updated_at, datetime('now'))
+            );
+        END;
+
+        CREATE TRIGGER IF NOT EXISTS quarantined_events_insert INSTEAD OF INSERT ON quarantined_events
+        BEGIN
+            INSERT INTO bronze.quarantined_event_log (
+                event_id, entity_key, error_code, error_message, raw_payload, quarantined_at
+            ) VALUES (
+                NEW.event_id, NEW.entity_key, NEW.error_code, NEW.error_message, NEW.raw_payload, COALESCE(NEW.quarantined_at, datetime('now'))
+            );
+        END;
         """)
         self._conn.commit()
 

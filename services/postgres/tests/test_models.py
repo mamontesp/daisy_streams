@@ -1,29 +1,44 @@
-"""Unit tests for PostgreSQL Pydantic models."""
+"""Unit tests for PostgreSQL Pydantic models across Bronze and Silver schemas."""
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 from uuid import uuid4
 import pytest
 from pydantic import ValidationError
 
 from services.postgres.models import (
-    EntityHistoryResponse,
     ErrorCode,
-    EventsQueryResponse,
+    EventEnvelope,
     IngestionResult,
-    LagMetrics,
     OrderPayload,
     OrdersAppendLog,
     OrdersCurrentState,
+    QuarantinedEventLog,
     QuarantinedEventRecord,
-    StatsResponse,
+    RawEventLog,
+    RawOrderEvents,
+    RawOrdersLog,
+    StgCurrentOrders,
 )
+from services.postgres.models.bronze import (
+    QuarantinedEventLog as BronzeQuarantinedEventLog,
+    RawEventLog as BronzeRawEventLog,
+    RawOrdersLog as BronzeRawOrdersLog,
+)
+from services.postgres.models.silver import StgCurrentOrders as SilverStgCurrentOrders
+
+
+def test_bronze_and_silver_subpackage_imports() -> None:
+    """Verify clean importing directly from bronze and silver modules."""
+    assert BronzeRawEventLog is RawEventLog
+    assert BronzeRawOrdersLog is RawOrdersLog
+    assert BronzeQuarantinedEventLog is QuarantinedEventLog
+    assert SilverStgCurrentOrders is StgCurrentOrders
 
 
 def test_order_payload_valid_and_aliasing() -> None:
     """Verify OrderPayload parses both Snowflake uppercase aliases and lowercase names."""
-    # Snowflake TPCH format
     data = {
         "O_ORDERKEY": 1001,
         "O_CUSTKEY": 50,
@@ -38,7 +53,6 @@ def test_order_payload_valid_and_aliasing() -> None:
     assert order.total_price == 199.50
     assert order.order_status == "O"
 
-    # Lowercase format
     data_lower = {"total_price": 50.25, "order_key": "ord-2"}
     order_lower = OrderPayload.model_validate(data_lower)
     assert order_lower.total_price == 50.25
@@ -56,11 +70,11 @@ def test_order_payload_negative_or_zero_price_fails() -> None:
     assert "strictly positive" in str(exc2.value)
 
 
-def test_orders_append_log_model() -> None:
-    """Verify OrdersAppendLog validates fields and serialization."""
+def test_raw_event_log_model() -> None:
+    """Verify RawEventLog validates fields, serialization, and legacy alias."""
     now = datetime.now(timezone.utc)
     ev_id = uuid4()
-    record = OrdersAppendLog(
+    record = RawEventLog(
         id=1,
         event_id=ev_id,
         event_type="insert",
@@ -74,26 +88,68 @@ def test_orders_append_log_model() -> None:
     assert record.entity_key == "ord-1"
     assert record.payload["price"] == 100.0
 
+    # Test legacy alias
+    assert OrdersAppendLog is RawEventLog
 
-def test_orders_current_state_model() -> None:
-    """Verify OrdersCurrentState validates fields and serialization."""
+
+def test_raw_orders_log_model() -> None:
+    """Verify RawOrdersLog validates unpacked order fields and aliases."""
     now = datetime.now(timezone.utc)
     ev_id = uuid4()
-    state_rec = OrdersCurrentState(
+    order_log = RawOrdersLog(
+        log_id=1,
+        event_id=ev_id,
+        event_type="insert",
+        source="snowflake.orders",
+        entity_key="1001",
+        order_key=1001,
+        cust_key=50,
+        order_status="O",
+        total_price=250.75,
+        order_date=date(2026, 10, 12),
+        customer_name="Customer#000000050",
+        occurred_at=now,
+        captured_at=now,
+        processed_at=now,
+    )
+    assert order_log.log_id == 1
+    assert order_log.order_key == 1001
+    assert order_log.cust_key == 50
+    assert order_log.total_price == 250.75
+    assert order_log.customer_name == "Customer#000000050"
+
+    # Test alias
+    assert RawOrderEvents is RawOrdersLog
+
+
+def test_stg_current_orders_model() -> None:
+    """Verify StgCurrentOrders validates structured fields and legacy alias."""
+    now = datetime.now(timezone.utc)
+    ev_id = uuid4()
+    state_rec = StgCurrentOrders(
         entity_key="ord-1",
+        order_key=1001,
+        cust_key=50,
+        order_status="O",
+        total_price=150.00,
+        order_date=date(2026, 10, 12),
         latest_event_id=ev_id,
         event_type="insert",
-        state={"price": 100.0},
+        state={"price": 150.0},
         last_occurred_at=now,
     )
     assert state_rec.entity_key == "ord-1"
+    assert state_rec.order_key == 1001
+    assert state_rec.total_price == 150.00
     assert state_rec.latest_event_id == ev_id
-    assert state_rec.state["price"] == 100.0
+
+    # Test legacy alias
+    assert OrdersCurrentState is StgCurrentOrders
 
 
-def test_quarantined_event_record_and_error_codes() -> None:
-    """Verify QuarantinedEventRecord parses ErrorCode enum."""
-    record = QuarantinedEventRecord(
+def test_quarantined_event_log_and_error_codes() -> None:
+    """Verify QuarantinedEventLog parses ErrorCode enum and legacy alias."""
+    record = QuarantinedEventLog(
         error_code=ErrorCode.BUSINESS_RULE_VIOLATION,
         error_message="Price cannot be negative",
         raw_payload={"price": -5.0},
@@ -101,24 +157,31 @@ def test_quarantined_event_record_and_error_codes() -> None:
     assert record.error_code == ErrorCode.BUSINESS_RULE_VIOLATION
     assert record.error_code.value == "BUSINESS_RULE_VIOLATION"
 
+    # Test legacy alias
+    assert QuarantinedEventRecord is QuarantinedEventLog
 
-def test_stats_and_query_response_models() -> None:
-    """Verify StatsResponse and EventsQueryResponse model serialization and attribute access."""
-    stats = StatsResponse(
-        total_events=10,
-        counts_by_type={"insert": 7, "update": 3},
-        quarantined_count=1,
-        unique_entities_count=5,
-        lag=LagMetrics(avg_lag_seconds=0.125, max_lag_seconds=0.5),
-        last_watermark="2026-10-12T12:00:00Z",
+
+def test_event_envelope_and_ingestion_result_models() -> None:
+    """Verify EventEnvelope and IngestionResult models for event processing."""
+    now = datetime.now(timezone.utc)
+    ev_id = uuid4()
+    envelope = EventEnvelope(
+        event_id=ev_id,
+        event_type="insert",
+        source="snowflake.orders",
+        entity_key="ord-100",
+        payload={"O_ORDERKEY": 100, "O_TOTALPRICE": 50.0},
+        occurred_at=now,
     )
-    # Typed attribute access
-    assert stats.total_events == 10
-    assert stats.lag.avg_lag_seconds == 0.125
-    assert stats.lag.max_lag_seconds == 0.5
-    assert stats.counts_by_type["insert"] == 7
+    assert envelope.event_id == ev_id
+    assert envelope.entity_key == "ord-100"
 
-    # JSON export
-    json_dump = stats.model_dump_json()
-    assert "avg_lag_seconds" in json_dump
-    assert stats.model_dump()["total_events"] == 10
+    result = IngestionResult(
+        status="processed",
+        event_id=str(ev_id),
+        entity_key="ord-100",
+        message="Stored in bronze and silver",
+    )
+    assert result.status == "processed"
+    assert result.event_id == str(ev_id)
+
