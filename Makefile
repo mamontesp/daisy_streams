@@ -3,7 +3,7 @@ PYTHON ?= $(VENV_BIN)python
 PYTEST ?= $(VENV_BIN)pytest
 PIP ?= $(VENV_BIN)pip
 
-.PHONY: help setup up up-adapter up-consumer up-ui down ps logs logs-adapter logs-consumer logs-garage logs-ui sync simulate consume consume-replay test test-postgres test-consumer test-adapter clean
+.PHONY: help setup up up-adapter up-consumer up-api up-ui down ps logs logs-adapter logs-consumer logs-api logs-garage logs-ui sync simulate consume consume-replay api test test-postgres test-consumer test-adapter test-api clean
 
 help:
 	@echo "Daisy Streams - Command Reference"
@@ -11,19 +11,23 @@ help:
 	@echo "  make up            - Launch all services via Docker Compose"
 	@echo "  make up-adapter    - Launch Garage and Snowflake Adapter only"
 	@echo "  make up-consumer   - Launch Kafka Consumer service only"
+	@echo "  make up-api        - Launch FastAPI Inspection Service only"
 	@echo "  make up-ui         - Launch Kafka UI service only"
 	@echo "  make down          - Stop and clean up Docker Compose containers"
 	@echo "  make ps            - Check status of running containers"
 	@echo "  make logs          - Follow all container logs"
 	@echo "  make logs-adapter  - Follow Snowflake Adapter container logs"
 	@echo "  make logs-consumer - Follow Kafka Consumer container logs"
+	@echo "  make logs-api      - Follow FastAPI Inspection Service container logs"
 	@echo "  make logs-garage   - Follow Garage container logs"
 	@echo "  make logs-ui       - Follow Kafka UI container logs"
 	@echo "  make sync          - Run single-pass Snowflake sync job locally"
 	@echo "  make simulate      - Run change simulation in dry-run mode"
 	@echo "  make consume       - Run Kafka consumer daemon locally"
 	@echo "  make consume-replay- Replay stream from offset 0"
+	@echo "  make api           - Run FastAPI inspection service locally"
 	@echo "  make test          - Run pytest test suite"
+	@echo "  make test-api      - Run FastAPI API test suite"
 	@echo "  make clean         - Clean up temporary files, caches, and state files"
 
 setup:
@@ -31,7 +35,7 @@ setup:
 	$(PIP) install -r requirements.txt
 
 up:
-	docker compose up -d garage kafka postgres kafka-ui snowflake-adapter consumer
+	docker compose up -d garage kafka postgres kafka-ui snowflake-adapter consumer api
 
 up-adapter:
 	docker compose up -d garage
@@ -39,6 +43,9 @@ up-adapter:
 
 up-consumer:
 	docker compose up -d consumer
+
+up-api:
+	docker compose up -d api
 
 up-ui:
 	docker compose up -d kafka-ui
@@ -58,6 +65,9 @@ logs-adapter:
 logs-consumer:
 	docker compose logs -f consumer
 
+logs-api:
+	docker compose logs -f api
+
 logs-garage:
 	docker compose logs -f garage
 
@@ -76,8 +86,11 @@ consume:
 consume-replay:
 	$(PYTHON) services/consumer/scripts/run_consumer.py --replay-offset-0
 
+api:
+	$(PYTHON) services/api/scripts/run_api.py --reload
+
 test:
-	$(PYTEST) services/postgres/tests services/consumer/tests -v
+	$(PYTEST) services/postgres/tests services/consumer/tests services/api/tests -v
 
 test-postgres:
 	$(PYTEST) services/postgres/tests -v
@@ -87,6 +100,9 @@ test-consumer:
 
 test-adapter:
 	$(PYTEST) services/snowflake_adapter/tests -v
+
+test-api:
+	$(PYTEST) services/api/tests -v
 
 clean:
 	rm -rf .pytest_cache __pycache__ services/*/__pycache__ services/*/*/__pycache__ services/*/tests/__pycache__ .daisy_sync_state.json

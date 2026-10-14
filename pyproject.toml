@@ -25,7 +25,8 @@ dev = [
 ]
 
 [tool.pytest.ini_options]
-testpaths = ["services/snowflake_adapter/tests", "services/postgres/tests", "services/consumer/tests"]
+pythonpath = ["."]
+testpaths = ["services/snowflake_adapter/tests", "services/postgres/tests", "services/consumer/tests", "services/api/tests"]
 python_files = ["test_*.py"]
 python_functions = ["test_*"]
 addopts = "-v --tb=short"
