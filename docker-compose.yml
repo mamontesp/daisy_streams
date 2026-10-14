@@ -91,13 +91,15 @@ services:
   # Snowflake Ingestion Adapter Service (Part A)
   snowflake-adapter:
     build:
-      context: ./services/snowflake_adapter
-      dockerfile: Dockerfile
+      context: .
+      dockerfile: ./services/snowflake_adapter/Dockerfile
     container_name: daisy-snowflake-adapter
     env_file:
       - .env
     environment:
       - GARAGE_ENDPOINT=garage:3900
+      - GARAGE_LOGS_BUCKET=${GARAGE_LOGS_BUCKET:-daisy-logs}
+      - LOG_STORE_TO_S3=${LOG_STORE_TO_S3:-true}
       - SYNC_STATE_STORAGE=garage
       - KAFKA_BOOTSTRAP_SERVERS=kafka:29092
       - SNOWFLAKE_ENTITY_KEY_COLUMN=O_CUSTKEY
@@ -131,10 +133,17 @@ services:
       - POSTGRES_DB=${POSTGRES_DB:-daisy_streams}
       - POSTGRES_USER=${POSTGRES_USER:-postgres}
       - POSTGRES_PASSWORD=${POSTGRES_PASSWORD:-postgres}
+      - GARAGE_ENDPOINT=garage:3900
+      - GARAGE_LOGS_BUCKET=${GARAGE_LOGS_BUCKET:-daisy-logs}
+      - GARAGE_ACCESS_KEY=${GARAGE_ACCESS_KEY:-GKdaisystreamskey01234}
+      - GARAGE_SECRET_KEY=${GARAGE_SECRET_KEY:-daisystreamssecretkey0123456789abcdef0123456789abcdef}
+      - LOG_STORE_TO_S3=${LOG_STORE_TO_S3:-true}
     depends_on:
       kafka:
         condition: service_started
       postgres:
+        condition: service_healthy
+      garage:
         condition: service_healthy
     restart: unless-stopped
     networks:
@@ -156,10 +165,17 @@ services:
       - POSTGRES_DB=${POSTGRES_DB:-daisy_streams}
       - POSTGRES_USER=${POSTGRES_USER:-postgres}
       - POSTGRES_PASSWORD=${POSTGRES_PASSWORD:-postgres}
+      - GARAGE_ENDPOINT=garage:3900
+      - GARAGE_LOGS_BUCKET=${GARAGE_LOGS_BUCKET:-daisy-logs}
+      - GARAGE_ACCESS_KEY=${GARAGE_ACCESS_KEY:-GKdaisystreamskey01234}
+      - GARAGE_SECRET_KEY=${GARAGE_SECRET_KEY:-daisystreamssecretkey0123456789abcdef0123456789abcdef}
+      - LOG_STORE_TO_S3=${LOG_STORE_TO_S3:-true}
     ports:
       - "${API_PORT:-8000}:8000"
     depends_on:
       postgres:
+        condition: service_healthy
+      garage:
         condition: service_healthy
     restart: unless-stopped
     networks:

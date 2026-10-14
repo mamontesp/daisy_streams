@@ -100,11 +100,14 @@ def test_garage_state_store_persistence(mock_s3_client) -> None:
     assert recovered.records_synced == 10000
 
 
-def test_state_store_factory_garage(mock_s3_client) -> None:
+def test_state_store_factory_garage(mock_s3_client, monkeypatch) -> None:
     """Test get_state_store factory instantiates GarageStateStore when configured."""
+    import boto3
     from snowflake_adapter.state import get_state_store
     from snowflake_adapter.config import Settings
     from snowflake_adapter.state.minio_store import S3StateStore
+
+    monkeypatch.setattr(boto3, "client", lambda *args, **kwargs: mock_s3_client)
 
     settings = Settings(
         _env_file=None,

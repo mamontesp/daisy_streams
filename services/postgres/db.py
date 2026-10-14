@@ -158,6 +158,7 @@ class SQLiteTestDB(BaseDB):
         CREATE TABLE IF NOT EXISTS event_log (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             event_id TEXT NOT NULL,
+            batch_id TEXT,
             event_type TEXT NOT NULL,
             source TEXT NOT NULL,
             entity_key TEXT NOT NULL,
@@ -170,6 +171,7 @@ class SQLiteTestDB(BaseDB):
         );
 
         CREATE INDEX IF NOT EXISTS idx_event_log_event_id ON event_log (event_id);
+        CREATE INDEX IF NOT EXISTS idx_event_log_batch_id ON event_log (batch_id);
         CREATE INDEX IF NOT EXISTS idx_event_log_entity_key ON event_log (entity_key);
         CREATE INDEX IF NOT EXISTS idx_event_log_occurred_at ON event_log (occurred_at);
 

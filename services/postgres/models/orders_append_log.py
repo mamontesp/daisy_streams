@@ -15,6 +15,7 @@ class OrdersAppendLog(BaseModel):
 
     id: Optional[int] = Field(default=None, description="Database auto-increment sequence ID")
     event_id: UUID = Field(description="Unique event UUID")
+    batch_id: Optional[str] = Field(default=None, description="Sync run batch correlation ID")
     event_type: Literal["insert", "update"] = Field(description="Event operation type")
     source: str = Field(description="Event data source system")
     entity_key: str = Field(description="Primary entity key")

@@ -70,15 +70,24 @@ class KafkaEventProducer:
         key_bytes = str(routing_key).encode("utf-8")
         value_bytes = envelope.model_dump_json().encode("utf-8")
 
+        headers: list[tuple[str, bytes]] = [
+            ("event_id", str(envelope.event_id).encode("utf-8")),
+        ]
+        if envelope.batch_id:
+            headers.append(("batch_id", str(envelope.batch_id).encode("utf-8")))
+
+        produce_kwargs: dict[str, Any] = {
+            "topic": target_topic,
+            "key": key_bytes,
+            "value": value_bytes,
+            "headers": headers,
+            "on_delivery": self._delivery_callback,
+        }
+
         delay = self.initial_backoff_sec
         for attempt in range(1, self.max_retries + 1):
             try:
-                self._producer.produce(
-                    topic=target_topic,
-                    key=key_bytes,
-                    value=value_bytes,
-                    on_delivery=self._delivery_callback,
-                )
+                self._producer.produce(**produce_kwargs)
                 self._producer.poll(0)
                 return
             except BufferError as e:

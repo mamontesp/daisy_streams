@@ -11,7 +11,12 @@ from uuid import uuid4
 from snowflake_adapter.client import SnowflakeClient, SnowflakeConnectorClient
 from snowflake_adapter.queries import build_incremental_sync_query, build_initial_sync_query
 from snowflake_adapter.config import Settings, get_settings
-from snowflake_adapter.logging import correlation_batch_id, get_logger
+from snowflake_adapter.logging import (
+    correlation_batch_id,
+    correlation_event_id,
+    get_logger,
+    get_s3_log_handler,
+)
 from snowflake_adapter.models.envelope import EventEnvelope
 from snowflake_adapter.models.state import SyncState
 from snowflake_adapter.state.base import StateStore
@@ -187,6 +192,9 @@ class SnowflakeAdapter:
         # 3. AC-A02: Return cleanly with zero events if unmodified
         if records_count == 0:
             logger.info("No delta records found above watermark %s. Zero events emitted.", prior_watermark)
+            s3_handler = get_s3_log_handler()
+            if s3_handler is not None:
+                s3_handler.flush(batch_id=batch_id)
             return SyncResult(
                 source_table=source_table,
                 batch_id=batch_id,
@@ -242,6 +250,7 @@ class SnowflakeAdapter:
             payload = _serialize_row(row)
 
             envelope = EventEnvelope(
+                batch_id=batch_id,
                 event_type=event_type,  # type: ignore[arg-type]
                 source=source_id,
                 entity_key=entity_key,
@@ -278,6 +287,11 @@ class SnowflakeAdapter:
             records_count,
             new_cumulative_synced,
         )
+
+        # 8. Flush sync batch structured logs to S3
+        s3_handler = get_s3_log_handler()
+        if s3_handler is not None:
+            s3_handler.flush(batch_id=batch_id)
 
         return SyncResult(
             source_table=source_table,

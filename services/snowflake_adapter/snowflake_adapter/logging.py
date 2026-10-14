@@ -42,14 +42,39 @@ class JSONFormatter(logging.Formatter):
         return json.dumps(log_payload)
 
 
-def configure_logging(level: str = "INFO") -> None:
-    """Configure root logger with structured JSON formatting."""
+_s3_log_handler: Optional[Any] = None
+
+
+def configure_logging(level: str = "INFO", enable_s3: Optional[bool] = None) -> None:
+    """Configure root logger with structured JSON formatting and S3 log persistence."""
+    global _s3_log_handler
     handler = logging.StreamHandler(sys.stdout)
-    handler.setFormatter(JSONFormatter())
+    formatter = JSONFormatter()
+    handler.setFormatter(formatter)
 
     root_logger = logging.getLogger()
     root_logger.setLevel(level.upper())
-    root_logger.handlers = [handler]
+    handlers: list[logging.Handler] = [handler]
+
+    try:
+        from services.common.s3_log_handler import S3BufferedLogHandler
+        s3_handler = S3BufferedLogHandler(
+            service_name="snowflake-adapter",
+            enabled=enable_s3,
+        )
+        s3_handler.setFormatter(formatter)
+        if s3_handler.enabled:
+            handlers.append(s3_handler)
+            _s3_log_handler = s3_handler
+    except Exception as exc:
+        sys.stderr.write(f"[configure_logging] S3 logging handler not attached: {exc}\n")
+
+    root_logger.handlers = handlers
+
+
+def get_s3_log_handler() -> Optional[Any]:
+    """Get active S3 logging handler instance if configured."""
+    return _s3_log_handler
 
 
 def get_logger(name: str) -> logging.Logger:

@@ -139,6 +139,10 @@ def main() -> None:
             sleep_elapsed += 1
 
     logger.info("Snowflake Adapter service exited.")
+    from snowflake_adapter.logging import get_s3_log_handler
+    s3_handler = get_s3_log_handler()
+    if s3_handler is not None:
+        s3_handler.close()
 
 
 if __name__ == "__main__":
