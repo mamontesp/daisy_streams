@@ -1,4 +1,4 @@
-"""Representation of a row in the append-only event ledger (REQ-C01)."""
+"""Representation of a row in bronze.raw_event_log (REQ-C01)."""
 
 from __future__ import annotations
 
@@ -8,8 +8,8 @@ from uuid import UUID
 from pydantic import BaseModel, ConfigDict, Field
 
 
-class OrdersAppendLog(BaseModel):
-    """Representation of a row in the append-only `event_log` table (REQ-C01)."""
+class RawEventLog(BaseModel):
+    """Representation of a row in the append-only `bronze.raw_event_log` table (REQ-C01)."""
 
     model_config = ConfigDict(from_attributes=True, extra="ignore")
 
@@ -30,5 +30,6 @@ class OrdersAppendLog(BaseModel):
     schema_version: str = Field(default="1.0.0", description="Envelope schema version")
 
 
-# Backwards compatibility alias
-EventLogRecord = OrdersAppendLog
+# Backwards compatibility aliases
+OrdersAppendLog = RawEventLog
+EventLogRecord = RawEventLog

@@ -1,36 +1,74 @@
-"""PostgreSQL Repository implementing dual-table materialization, DQ routing, and query contracts."""
+"""PostgreSQL Repository implementing Medallion (Bronze/Silver) materialization, DQ routing, and query contracts."""
 
 from __future__ import annotations
 
 import json
 import logging
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 from pathlib import Path
 from typing import Any, Optional, Union
 from uuid import UUID
 
+from dataclasses import dataclass, field
 from services.postgres.db import BaseDB, PostgresDB, SQLiteTestDB, get_db
 from services.postgres.models import (
     CurrentStateRecord,
-    EntityHistoryResponse,
     ErrorCode,
     EventEnvelope,
     EventLogRecord,
-    EventsQueryResponse,
     IngestionResult,
-    LagMetrics,
     OrdersAppendLog,
     OrdersCurrentState,
+    QuarantinedEventLog,
     QuarantinedEventRecord,
-    StatsResponse,
+    RawEventLog,
+    RawOrdersLog,
+    StgCurrentOrders,
 )
 from services.postgres.validator import validate_event, ValidationResult
 
 logger = logging.getLogger(__name__)
 
 
+@dataclass
+class LagMetrics:
+    """Stream processing lag metrics."""
+    avg_lag_seconds: float = 0.0
+    max_lag_seconds: float = 0.0
+
+
+@dataclass
+class StatsResponse:
+    """Aggregated metrics returned by get_stats()."""
+    total_events: int = 0
+    counts_by_type: dict[str, int] = field(default_factory=dict)
+    quarantined_count: int = 0
+    unique_entities_count: int = 0
+    lag: LagMetrics = field(default_factory=LagMetrics)
+    last_watermark: Optional[Any] = None
+    last_processed_at: Optional[Any] = None
+
+
+@dataclass
+class EventsQueryResponse:
+    """Paginated events response returned by get_events()."""
+    total: int = 0
+    limit: int = 50
+    offset: int = 0
+    events: list[Any] = field(default_factory=list)
+
+
+@dataclass
+class EntityHistoryResponse:
+    """Current state and change history returned by get_entity_state_and_history()."""
+    entity_key: str = ""
+    current_state: Any = None
+    history: list[Any] = field(default_factory=list)
+
+
+
 class PostgresRepository:
-    """Encapsulates all PostgreSQL data persistence, idempotent materialization, and queries."""
+    """Encapsulates all PostgreSQL data persistence, idempotent materialization, and queries across Bronze and Silver schemas."""
 
     def __init__(self, db: Optional[BaseDB] = None, auto_init_schema: bool = True) -> None:
         self.db = db if db is not None else get_db()
@@ -41,7 +79,7 @@ class PostgresRepository:
                 logger.warning("Database schema auto-init warning: %s", exc)
 
     def init_schema(self, ddl_path: Optional[str] = None) -> None:
-        """Execute init.sql DDL to create tables and indexes."""
+        """Execute init.sql DDL to create bronze/silver schemas, tables, and views."""
         if isinstance(self.db, SQLiteTestDB):
             return  # SQLite schema initialized automatically
 
@@ -58,10 +96,10 @@ class PostgresRepository:
         logger.info("Executed schema DDL from %s", ddl_file)
 
     def check_event_exists(self, event_id: UUID) -> bool:
-        """Check whether an event_id already exists in event_log (for DQ-3)."""
+        """Check whether an event_id already exists in bronze.raw_event_log (for DQ-3)."""
         try:
             row = self.db.fetchone(
-                "SELECT 1 AS exists_flag FROM event_log WHERE event_id = %s LIMIT 1",
+                "SELECT 1 AS exists_flag FROM bronze.raw_event_log WHERE event_id = %s LIMIT 1",
                 (event_id,),
             )
             return row is not None
@@ -73,12 +111,12 @@ class PostgresRepository:
         self,
         envelope: EventEnvelope,
         processed_at: Optional[datetime] = None,
-    ) -> OrdersAppendLog:
-        """Insert a validated event into append-only event_log (REQ-C01)."""
+    ) -> RawEventLog:
+        """Insert a validated event into append-only bronze.raw_event_log (REQ-C01)."""
         now = processed_at or datetime.now(timezone.utc)
         self.db.execute(
             """
-            INSERT INTO event_log (
+            INSERT INTO bronze.raw_event_log (
                 event_id, batch_id, event_type, source, entity_key, partition_key,
                 payload, occurred_at, captured_at, processed_at, schema_version
             ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
@@ -97,7 +135,7 @@ class PostgresRepository:
                 envelope.schema_version,
             ),
         )
-        return OrdersAppendLog(
+        return RawEventLog(
             event_id=envelope.event_id,
             batch_id=envelope.batch_id,
             event_type=envelope.event_type,
@@ -115,27 +153,110 @@ class PostgresRepository:
         self,
         envelope: EventEnvelope,
         processed_at: Optional[datetime] = None,
-    ) -> OrdersCurrentState:
+    ) -> StgCurrentOrders:
         """
-        Monotonically update materialized current_state (REQ-C01, REQ-C02).
+        Monotonically update materialized silver.stg_current_orders (REQ-C01, REQ-C02).
         Guarantees that replaying the stream from offset 0 converges to identical state.
         """
         now = processed_at or datetime.now(timezone.utc)
+        payload = envelope.payload if isinstance(envelope.payload, dict) else {}
+
+        # Extract structured domain fields from payload
+        order_key_raw = payload.get("O_ORDERKEY") or payload.get("order_key") or envelope.entity_key
+        cust_key_raw = payload.get("O_CUSTKEY") or payload.get("cust_key") or envelope.partition_key
+        order_status = payload.get("O_ORDERSTATUS") or payload.get("order_status")
+        total_price_raw = payload.get("O_TOTALPRICE") or payload.get("total_price")
+        order_date_raw = payload.get("O_ORDERDATE") or payload.get("order_date")
+        order_priority = payload.get("O_ORDERPRIORITY") or payload.get("order_priority")
+        clerk = payload.get("O_CLERK") or payload.get("clerk")
+        ship_priority_raw = payload.get("O_SHIPPRIORITY") or payload.get("ship_priority")
+        comment = payload.get("O_COMMENT") or payload.get("comment")
+
+        # Joined customer fields
+        customer_name = payload.get("C_NAME")
+        customer_phone = payload.get("C_PHONE")
+        customer_acct_bal_raw = payload.get("C_ACCTBAL")
+        customer_market_segment = payload.get("C_MKTSEGMENT")
+
+        try:
+            order_key = int(order_key_raw) if order_key_raw is not None else None
+        except Exception:
+            order_key = None
+
+        try:
+            cust_key = int(cust_key_raw) if cust_key_raw is not None else None
+        except Exception:
+            cust_key = None
+
+        try:
+            total_price = float(total_price_raw) if total_price_raw is not None else None
+        except Exception:
+            total_price = None
+
+        try:
+            ship_priority = int(ship_priority_raw) if ship_priority_raw is not None else None
+        except Exception:
+            ship_priority = None
+
+        try:
+            customer_acct_bal = float(customer_acct_bal_raw) if customer_acct_bal_raw is not None else None
+        except Exception:
+            customer_acct_bal = None
+
+        parsed_order_date = None
+        if order_date_raw:
+            if isinstance(order_date_raw, date):
+                parsed_order_date = order_date_raw
+            elif isinstance(order_date_raw, str):
+                try:
+                    parsed_order_date = date.fromisoformat(order_date_raw[:10])
+                except Exception:
+                    parsed_order_date = None
+
         self.db.execute(
             """
-            INSERT INTO current_state (
-                entity_key, latest_event_id, event_type, state, last_occurred_at, last_updated_at
-            ) VALUES (%s, %s, %s, %s, %s, %s)
+            INSERT INTO silver.stg_current_orders (
+                entity_key, order_key, cust_key, order_status, total_price, order_date,
+                order_priority, clerk, ship_priority, comment,
+                customer_name, customer_phone, customer_acct_bal, customer_market_segment,
+                latest_event_id, event_type, state, last_occurred_at, last_updated_at
+            ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
             ON CONFLICT (entity_key) DO UPDATE SET
+                order_key = EXCLUDED.order_key,
+                cust_key = EXCLUDED.cust_key,
+                order_status = EXCLUDED.order_status,
+                total_price = EXCLUDED.total_price,
+                order_date = EXCLUDED.order_date,
+                order_priority = EXCLUDED.order_priority,
+                clerk = EXCLUDED.clerk,
+                ship_priority = EXCLUDED.ship_priority,
+                comment = EXCLUDED.comment,
+                customer_name = EXCLUDED.customer_name,
+                customer_phone = EXCLUDED.customer_phone,
+                customer_acct_bal = EXCLUDED.customer_acct_bal,
+                customer_market_segment = EXCLUDED.customer_market_segment,
                 latest_event_id = EXCLUDED.latest_event_id,
                 event_type = EXCLUDED.event_type,
                 state = EXCLUDED.state,
                 last_occurred_at = EXCLUDED.last_occurred_at,
                 last_updated_at = EXCLUDED.last_updated_at
-            WHERE EXCLUDED.last_occurred_at >= current_state.last_occurred_at
+            WHERE EXCLUDED.last_occurred_at >= silver.stg_current_orders.last_occurred_at
             """,
             (
                 envelope.entity_key,
+                order_key,
+                cust_key,
+                order_status,
+                total_price,
+                str(parsed_order_date) if parsed_order_date else None,
+                order_priority,
+                clerk,
+                ship_priority,
+                comment,
+                customer_name,
+                customer_phone,
+                customer_acct_bal,
+                customer_market_segment,
                 envelope.event_id,
                 envelope.event_type,
                 envelope.payload,
@@ -143,8 +264,21 @@ class PostgresRepository:
                 now,
             ),
         )
-        return OrdersCurrentState(
+        return StgCurrentOrders(
             entity_key=envelope.entity_key,
+            order_key=order_key,
+            cust_key=cust_key,
+            order_status=order_status,
+            total_price=total_price,
+            order_date=parsed_order_date,
+            order_priority=order_priority,
+            clerk=clerk,
+            ship_priority=ship_priority,
+            comment=comment,
+            customer_name=customer_name,
+            customer_phone=customer_phone,
+            customer_acct_bal=customer_acct_bal,
+            customer_market_segment=customer_market_segment,
             latest_event_id=envelope.event_id,
             event_type=envelope.event_type,
             state=envelope.payload,
@@ -159,13 +293,13 @@ class PostgresRepository:
         raw_payload: dict[str, Any],
         event_id: Optional[UUID] = None,
         entity_key: Optional[str] = None,
-    ) -> QuarantinedEventRecord:
-        """Persist failed records into quarantined_events DLQ (REQ-C03)."""
+    ) -> QuarantinedEventLog:
+        """Persist failed records into bronze.quarantined_event_log DLQ (REQ-C03)."""
         err_str = error_code.value if isinstance(error_code, ErrorCode) else str(error_code)
         now = datetime.now(timezone.utc)
         self.db.execute(
             """
-            INSERT INTO quarantined_events (
+            INSERT INTO bronze.quarantined_event_log (
                 event_id, entity_key, error_code, error_message, raw_payload, quarantined_at
             ) VALUES (%s, %s, %s, %s, %s, %s)
             """,
@@ -179,7 +313,7 @@ class PostgresRepository:
             ),
         )
         parsed_err = ErrorCode(err_str) if err_str in ErrorCode._value2member_map_ else ErrorCode.UNKNOWN_ERROR
-        return QuarantinedEventRecord(
+        return QuarantinedEventLog(
             event_id=event_id,
             entity_key=entity_key,
             error_code=parsed_err,
@@ -196,8 +330,8 @@ class PostgresRepository:
         """
         Atomic consumer ingestion pipeline:
           1. Run Data Quality checks (DQ-1, DQ-2, DQ-3).
-          2. If invalid: quarantine to DLQ without updating current_state.
-          3. If valid: append to event_log and monotonically upsert to current_state.
+          2. If invalid: quarantine to bronze.quarantined_event_log without updating silver.stg_current_orders.
+          3. If valid: append to bronze.raw_event_log and monotonically upsert to silver.stg_current_orders.
         """
         res: ValidationResult = validate_event(
             raw_event,
@@ -226,7 +360,7 @@ class PostgresRepository:
         assert res.envelope is not None
         envelope = res.envelope
 
-        # Ingest atomically into event_log and current_state
+        # Ingest atomically into bronze.raw_event_log and silver.stg_current_orders
         self.append_event_log(envelope, processed_at=now)
         self.upsert_current_state(envelope, processed_at=now)
 
@@ -251,7 +385,7 @@ class PostgresRepository:
         limit: int = 50,
         offset: int = 0,
     ) -> EventsQueryResponse:
-        """Query paginated events filtered by entity_key, type, and occurred_at range."""
+        """Query paginated events from bronze.raw_event_log filtered by entity_key, type, and occurred_at range."""
         conditions: list[str] = []
         params: list[Any] = []
 
@@ -274,7 +408,7 @@ class PostgresRepository:
         where_clause = f"WHERE {' AND '.join(conditions)}" if conditions else ""
 
         # Total count query
-        count_sql = f"SELECT COUNT(*) AS total FROM event_log {where_clause}"
+        count_sql = f"SELECT COUNT(*) AS total FROM bronze.raw_event_log {where_clause}"
         count_row = self.db.fetchone(count_sql, tuple(params))
         total_count = count_row["total"] if count_row else 0
 
@@ -283,7 +417,7 @@ class PostgresRepository:
         SELECT
             id, event_id, event_type, source, entity_key, partition_key,
             payload, occurred_at, captured_at, processed_at, schema_version
-        FROM event_log
+        FROM bronze.raw_event_log
         {where_clause}
         ORDER BY occurred_at DESC, id DESC
         LIMIT %s OFFSET %s
@@ -291,11 +425,11 @@ class PostgresRepository:
         data_params = list(params) + [limit, offset]
         rows = self.db.fetchall(data_sql, tuple(data_params))
 
-        # Convert rows to OrdersAppendLog models
-        event_records: list[OrdersAppendLog] = []
+        # Convert rows to RawEventLog models
+        event_records: list[RawEventLog] = []
         for r in rows:
             try:
-                event_records.append(OrdersAppendLog.model_validate(r))
+                event_records.append(RawEventLog.model_validate(r))
             except Exception:
                 event_records.append(r)  # type: ignore
 
@@ -307,12 +441,15 @@ class PostgresRepository:
         )
 
     def get_entity_state_and_history(self, entity_key: str) -> Optional[EntityHistoryResponse]:
-        """Return materialized entity state along with full chronological change history."""
-        # 1. Fetch current materialized state
+        """Return materialized silver.stg_current_orders along with full chronological change history."""
+        # 1. Fetch current materialized state from silver
         current = self.db.fetchone(
             """
-            SELECT entity_key, latest_event_id, event_type, state, last_occurred_at, last_updated_at
-            FROM current_state
+            SELECT entity_key, order_key, cust_key, order_status, total_price, order_date,
+                   order_priority, clerk, ship_priority, comment, customer_name, customer_phone,
+                   customer_acct_bal, customer_market_segment, latest_event_id, event_type, state,
+                   last_occurred_at, last_updated_at
+            FROM silver.stg_current_orders
             WHERE entity_key = %s
             """,
             (entity_key,),
@@ -320,13 +457,13 @@ class PostgresRepository:
         if current is None:
             return None
 
-        # 2. Fetch full history from event_log in chronological order
+        # 2. Fetch full history from bronze.raw_event_log in chronological order
         history = self.db.fetchall(
             """
             SELECT
                 id, event_id, event_type, source, entity_key, partition_key,
                 payload, occurred_at, captured_at, processed_at, schema_version
-            FROM event_log
+            FROM bronze.raw_event_log
             WHERE entity_key = %s
             ORDER BY occurred_at ASC, id ASC
             """,
@@ -334,14 +471,14 @@ class PostgresRepository:
         )
 
         try:
-            current_model = OrdersCurrentState.model_validate(current)
+            current_model = StgCurrentOrders.model_validate(current)
         except Exception:
             current_model = current  # type: ignore
 
-        history_models: list[OrdersAppendLog] = []
+        history_models: list[RawEventLog] = []
         for h in history:
             try:
-                history_models.append(OrdersAppendLog.model_validate(h))
+                history_models.append(RawEventLog.model_validate(h))
             except Exception:
                 history_models.append(h)  # type: ignore
 
@@ -353,21 +490,21 @@ class PostgresRepository:
 
     def get_stats(self) -> StatsResponse:
         """Aggregate event counts by type, lag metrics, and last processed watermark."""
-        # Counts by event type
+        # Counts by event type from bronze.raw_event_log
         type_rows = self.db.fetchall(
-            "SELECT event_type, COUNT(*) AS cnt FROM event_log GROUP BY event_type"
+            "SELECT event_type, COUNT(*) AS cnt FROM bronze.raw_event_log GROUP BY event_type"
         )
         counts_by_type = {r["event_type"]: r["cnt"] for r in type_rows}
 
-        # Quarantined count
-        dlq_row = self.db.fetchone("SELECT COUNT(*) AS total FROM quarantined_events")
+        # Quarantined count from bronze.quarantined_event_log
+        dlq_row = self.db.fetchone("SELECT COUNT(*) AS total FROM bronze.quarantined_event_log")
         quarantined_count = dlq_row["total"] if dlq_row else 0
 
-        # Unique entities in current_state
-        state_row = self.db.fetchone("SELECT COUNT(*) AS total FROM current_state")
+        # Unique entities in silver.stg_current_orders
+        state_row = self.db.fetchone("SELECT COUNT(*) AS total FROM silver.stg_current_orders")
         unique_entities_count = state_row["total"] if state_row else 0
 
-        # Watermark and lag metrics
+        # Watermark and lag metrics from bronze.raw_event_log
         metrics_sql = """
         SELECT
             COUNT(*) AS total_events,
@@ -375,7 +512,7 @@ class PostgresRepository:
             MAX(EXTRACT(EPOCH FROM (processed_at - occurred_at))) AS max_lag_seconds,
             MAX(occurred_at) AS last_watermark,
             MAX(processed_at) AS last_processed_at
-        FROM event_log
+        FROM bronze.raw_event_log
         """
         metrics = self.db.fetchone(metrics_sql)
 
@@ -404,3 +541,93 @@ class PostgresRepository:
             last_watermark=last_watermark,
             last_processed_at=last_processed_at,
         )
+
+    # =========================================================================
+    # Bronze & Silver Specific Query and Refresh Methods
+    # =========================================================================
+
+    def get_raw_orders_log(
+        self,
+        entity_key: Optional[str] = None,
+        order_key: Optional[int] = None,
+        cust_key: Optional[int] = None,
+        limit: int = 50,
+        offset: int = 0,
+    ) -> list[RawOrdersLog]:
+        """Query unpacked order events from bronze.raw_orders_log."""
+        conditions: list[str] = []
+        params: list[Any] = []
+
+        if entity_key:
+            conditions.append("entity_key = %s")
+            params.append(entity_key)
+
+        if order_key is not None:
+            conditions.append("order_key = %s")
+            params.append(order_key)
+
+        if cust_key is not None:
+            conditions.append("cust_key = %s")
+            params.append(cust_key)
+
+        where_clause = f"WHERE {' AND '.join(conditions)}" if conditions else ""
+        sql = f"""
+        SELECT *
+        FROM bronze.raw_orders_log
+        {where_clause}
+        ORDER BY occurred_at DESC, log_id DESC
+        LIMIT %s OFFSET %s
+        """
+        params.extend([limit, offset])
+        rows = self.db.fetchall(sql, tuple(params))
+        result: list[RawOrdersLog] = []
+        for r in rows:
+            try:
+                result.append(RawOrdersLog.model_validate(r))
+            except Exception:
+                result.append(r)  # type: ignore
+        return result
+
+    def refresh_raw_orders_log(self, concurrently: bool = True) -> None:
+        """Refresh the bronze.raw_orders_log materialized view."""
+        if isinstance(self.db, SQLiteTestDB):
+            return  # SQLite bronze.raw_orders_log is a dynamic VIEW
+        clause = "CONCURRENTLY " if concurrently else ""
+        self.db.execute(f"REFRESH MATERIALIZED VIEW {clause}bronze.raw_orders_log")
+
+    def get_stg_current_orders(
+        self,
+        order_key: Optional[int] = None,
+        cust_key: Optional[int] = None,
+        limit: int = 50,
+        offset: int = 0,
+    ) -> list[StgCurrentOrders]:
+        """Query cleaned latest order states from silver.stg_current_orders."""
+        conditions: list[str] = []
+        params: list[Any] = []
+
+        if order_key is not None:
+            conditions.append("order_key = %s")
+            params.append(order_key)
+
+        if cust_key is not None:
+            conditions.append("cust_key = %s")
+            params.append(cust_key)
+
+        where_clause = f"WHERE {' AND '.join(conditions)}" if conditions else ""
+        sql = f"""
+        SELECT *
+        FROM silver.stg_current_orders
+        {where_clause}
+        ORDER BY last_occurred_at DESC
+        LIMIT %s OFFSET %s
+        """
+        params.extend([limit, offset])
+        rows = self.db.fetchall(sql, tuple(params))
+        result: list[StgCurrentOrders] = []
+        for r in rows:
+            try:
+                result.append(StgCurrentOrders.model_validate(r))
+            except Exception:
+                result.append(r)  # type: ignore
+        return result

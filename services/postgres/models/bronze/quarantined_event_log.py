@@ -1,4 +1,4 @@
-"""Representation of a row in the quarantined_events DLQ table (REQ-C03)."""
+"""Representation of a row in bronze.quarantined_event_log DLQ table (REQ-C03)."""
 
 from __future__ import annotations
 
@@ -9,8 +9,8 @@ from pydantic import BaseModel, ConfigDict, Field
 from services.postgres.models.enums import ErrorCode
 
 
-class QuarantinedEventRecord(BaseModel):
-    """Representation of a row in the `quarantined_events` DLQ table (REQ-C03)."""
+class QuarantinedEventLog(BaseModel):
+    """Representation of a row in the `bronze.quarantined_event_log` DLQ table (REQ-C03)."""
 
     model_config = ConfigDict(from_attributes=True, extra="ignore")
 
@@ -24,3 +24,7 @@ class QuarantinedEventRecord(BaseModel):
         default_factory=lambda: datetime.now(timezone.utc),
         description="Timestamp when record was quarantined",
     )
+
+
+# Backwards compatibility alias
+QuarantinedEventRecord = QuarantinedEventLog
