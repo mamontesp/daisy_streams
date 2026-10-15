@@ -102,6 +102,8 @@ services:
       - LOG_STORE_TO_S3=${LOG_STORE_TO_S3:-true}
       - SYNC_STATE_STORAGE=garage
       - KAFKA_BOOTSTRAP_SERVERS=kafka:29092
+      - KAFKA_TOPIC=${KAFKA_TOPIC:-switch.orders.events}
+      - SNOWFLAKE_WATERMARK_COLUMN=${SNOWFLAKE_WATERMARK_COLUMN:-O_ORDERDATE}
       - SNOWFLAKE_ENTITY_KEY_COLUMN=O_CUSTKEY
       - SNOWFLAKE_PARTITION_KEY_COLUMN=O_CUSTKEY
     depends_on:
@@ -128,6 +130,7 @@ services:
     environment:
       - KAFKA_BOOTSTRAP_SERVERS=kafka:29092
       - KAFKA_TOPIC=${KAFKA_TOPIC:-switch.orders.events}
+      - KAFKA_CONSUMER_GROUP=${KAFKA_CONSUMER_GROUP:-daisy-streams-consumer-group}
       - POSTGRES_HOST=postgres
       - POSTGRES_PORT=5432
       - POSTGRES_DB=${POSTGRES_DB:-daisy_streams}

@@ -44,6 +44,15 @@ A production-grade, event-driven data streaming pipeline built to showcase portf
                                                   | Docker Service: `postgres`                  |
                                                   | - `event_log` (Append-only)                 |
                                                   | - `current_state` (Upsert latest)           |
+                                                  +----------------------+----------------------+
+                                                                         |
+                                                                         | SQL Queries
+                                                                         v
+                                                  +---------------------------------------------+
+                                                  | Docker Service: `api` (FastAPI)             |
+                                                  | - GET /events (Paginated event ledger)      |
+                                                  | - GET /stats (Latency lag & stream metrics) |
+                                                  | - Port :8000 (Swagger docs at /docs)        |
                                                   +---------------------------------------------+
 ```
 
@@ -75,19 +84,21 @@ Every state checkpoint strictly adheres to the JSON contract:
 
 ---
 
-## Quickstart (< 5 Shell Commands)
+## Quickstart
 
 ```bash
 # 1. Clone repository and initialize environment variables
 cp .env.example .env
 
-# 2. Start all services (Garage, Kafka, Kafka UI, PostgreSQL, and Snowflake Adapter)
-docker compose up -d garage kafka kafka-ui postgres snowflake-adapter
+# 2. Start all services (Garage, Kafka, Kafka UI, PostgreSQL, Snowflake Adapter, Consumer, and FastAPI API)
+docker compose up -d
+# or explicitly: docker compose up -d garage kafka kafka-ui postgres snowflake-adapter consumer api
+# or: make up
 
-# 3. Monitor services independently (and open Kafka UI at http://localhost:8080)
+# 3. Monitor services independently (and access Kafka UI at http://localhost:8080)
 docker compose logs -f snowflake-adapter
-docker compose logs -f garage
-docker compose logs -f kafka-ui
+docker compose logs -f consumer
+docker compose logs -f api
 
 # 4. Run change simulation to generate verifiable INSERTs and UPDATEs
 python services/snowflake_adapter/scripts/simulate_changes.py --dry-run
@@ -95,19 +106,57 @@ python services/snowflake_adapter/scripts/simulate_changes.py --dry-run
 # 5. Run Snowflake adapter in offline mock verification mode
 python services/snowflake_adapter/scripts/run_adapter.py --mock
 
-# 6. Run automated pytest test suite
+# 6. Query the FastAPI Event-Inspection API (http://localhost:8000)
+# Check API liveness & PostgreSQL database connectivity
+curl -s "http://localhost:8000/healthz" | jq
+
+# Fetch paginated raw events from the append-only ledger
+curl -s "http://localhost:8000/events?limit=10" | jq
+
+# Filter events by entity key and event action type
+curl -s "http://localhost:8000/events?entity_key=101&type=insert" | jq
+
+# Retrieve real-time stream aggregation metrics, processing lag, and watermarks
+curl -s "http://localhost:8000/stats" | jq
+
+# 7. (Optional) Run the FastAPI inspection service locally with auto-reload
+python services/api/scripts/run_api.py --reload
+# or: make api
+
+# 8. Run automated pytest test suites
 pytest services/snowflake_adapter/tests -v
+pytest services/api/tests -v
+# or run the full platform test suite:
+make test
 ```
+
+### Event-Inspection API Reference & Documentation
+
+The FastAPI inspection service runs on port `8000` (configurable via `API_PORT`):
+
+| Endpoint | Method | Description | Example |
+| :--- | :---: | :--- | :--- |
+| `/healthz` | `GET` | Health check probe & PostgreSQL connectivity status | `curl -s http://localhost:8000/healthz \| jq` |
+| `/events` | `GET` | Paginated raw event ledger with filtering (`entity_key`, `type`/`event_type`, `start`/`start_time`, `end`/`end_time`, `limit`, `offset`) | `curl -s "http://localhost:8000/events?limit=10" \| jq` |
+| `/stats` | `GET` | Aggregated stream metrics: event counts by type, pipeline latency lag (`avg_lag_seconds`, `max_lag_seconds`), DLQ quarantine count, unique entity count, and watermark | `curl -s http://localhost:8000/stats \| jq` |
+| `/docs` | `GET` | Interactive Swagger UI API documentation & OpenAPI schema | [http://localhost:8000/docs](http://localhost:8000/docs) |
+| `/redoc` | `GET` | Interactive ReDoc OpenAPI documentation | [http://localhost:8000/redoc](http://localhost:8000/redoc) |
 
 ---
 
 ## Independent Docker Service Monitoring & Garage Operations
 
-Both **Garage** and the **Snowflake Adapter** run as separate container services in `docker-compose.yml`, enabling independent lifecycle control, resource allocation, and log monitoring:
+All services—including **Garage**, the **Snowflake Adapter**, the **Consumer**, and the **FastAPI Inspection API**—run as separate container services in `docker-compose.yml`, enabling independent lifecycle control, resource allocation, and log monitoring:
 
 ```bash
 # Follow live adapter ingestion logs (with JSON correlation IDs)
 docker compose logs -f snowflake-adapter
+
+# Follow live consumer streaming logs
+docker compose logs -f consumer
+
+# Follow live FastAPI inspection API logs
+docker compose logs -f api
 
 # Follow live Garage S3 logs
 docker compose logs -f garage
@@ -118,6 +167,9 @@ docker compose logs -f kafka-ui
 # Access Kafka UI in browser:
 # http://localhost:8080
 
+# Access FastAPI Swagger UI in browser:
+# http://localhost:8000/docs
+
 # Check Garage cluster status directly via entrypoint binary
 docker exec daisy-garage /garage status
 
@@ -127,6 +179,9 @@ docker exec daisy-garage /garage key list
 
 # Restart adapter independently (verifies AC-A04 crash recovery)
 docker compose restart snowflake-adapter
+
+# Restart API service independently
+docker compose restart api
 ```
 
 ---
@@ -224,6 +279,15 @@ This project strictly adheres to **Spec-Driven Development (SDD)**:
 | **AC-A05** | Garage and Adapter run as isolated Docker services | Passed | Verified in `docker-compose.yml` with healthchecks & port mappings |
 | **AC-A06** | Zero-password authentication: `key_pair` (prod) or `externalbrowser` (dev) | Passed | `services/snowflake_adapter/tests/test_client_auth.py` (9 unit tests) |
 
+### Part C Acceptance Criteria Verification
+
+| Criterion | Description | Status | Verification |
+| :--- | :--- | :---: | :--- |
+| **AC-C01** | Append-only raw ledger (`event_log`) and materialized upsert (`current_state`) populated | Passed | `services/postgres/tests/test_postgres_storage.py::test_ac_c01_valid_event_populates_both_tables` |
+| **AC-C02** | Full topic replay from offset 0 produces idempotent state in `current_state` | Passed | `services/postgres/tests/test_postgres_storage.py::test_ac_c02_offset_zero_replay_idempotency` |
+| **AC-C03** | Data quality violations quarantined in DLQ table without pipeline crash | Passed | `services/postgres/tests/test_postgres_storage.py::test_ac_c03_negative_price_quarantined_in_dlq` |
+| **AC-C04** | All FastAPI inspection endpoints (`/events`, `/stats`, `/healthz`) serve verified responses | Passed | `services/api/tests/test_events_endpoint.py`, `services/api/tests/test_stats_endpoint.py` |
+
 ---
 
 ## Authentication Security: Zero-Password Architecture
@@ -313,11 +377,16 @@ python services/snowflake_adapter/scripts/simulate_changes.py --num-inserts 10 -
 
 ## Testing
 
-Run the full automated test suite covering models, MinIO state persistence, adapter sync cycles, and change simulation:
+Run the full automated test suite covering models, Garage S3 state persistence, adapter sync cycles, change simulation, Kafka consumer materialization, and FastAPI inspection endpoints:
 
 ```bash
-# Run tests directly or via Makefile
+# Run specific service test suites:
 pytest services/snowflake_adapter/tests -v
-# or
+pytest services/api/tests -v
+pytest services/consumer/tests -v
+pytest services/postgres/tests -v
+pytest services/common/tests -v
+
+# Or run the entire test suite via Makefile:
 make test
 ```
