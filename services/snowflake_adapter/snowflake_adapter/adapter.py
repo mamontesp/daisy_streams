@@ -55,7 +55,7 @@ def _serialize_row(row: dict[str, Any]) -> dict[str, Any]:
 
 
 def _parse_watermark_to_datetime(val: Any) -> datetime:
-    """Convert a watermark column value to timezone-aware datetime."""
+    """Convert a watermark column value to timezone-aware datetime preserving time precision."""
     if isinstance(val, datetime):
         if val.tzinfo is None:
             return val.replace(tzinfo=timezone.utc)
@@ -63,15 +63,27 @@ def _parse_watermark_to_datetime(val: Any) -> datetime:
     elif isinstance(val, date):
         return datetime(val.year, val.month, val.day, tzinfo=timezone.utc)
     elif isinstance(val, str):
+        val_clean = val.strip()
         try:
-            if len(val) == 10 and val.count("-") == 2:
-                d = date.fromisoformat(val)
+            if len(val_clean) == 10 and val_clean.count("-") == 2:
+                d = date.fromisoformat(val_clean)
                 return datetime(d.year, d.month, d.day, tzinfo=timezone.utc)
-            dt = datetime.fromisoformat(val.replace("Z", "+00:00"))
+            dt = datetime.fromisoformat(val_clean.replace("Z", "+00:00"))
             if dt.tzinfo is None:
                 return dt.replace(tzinfo=timezone.utc)
             return dt
         except ValueError:
+            for fmt in (
+                "%Y-%m-%d %H:%M:%S",
+                "%Y-%m-%d %H:%M:%S.%f",
+                "%Y-%m-%dT%H:%M:%S",
+                "%Y-%m-%dT%H:%M:%S.%f",
+            ):
+                try:
+                    dt = datetime.strptime(val_clean, fmt)
+                    return dt.replace(tzinfo=timezone.utc)
+                except ValueError:
+                    pass
             return datetime.now(timezone.utc)
     return datetime.now(timezone.utc)
 
@@ -234,7 +246,15 @@ class SnowflakeAdapter:
             )
             partition_key = str(part_val) if part_val is not None else entity_key
 
-            wm_raw = row.get(watermark_col) or row.get(watermark_col.lower()) or row.get("UPDATED_AT")
+            wm_raw = (
+                row.get(watermark_col)
+                or row.get(watermark_col.upper())
+                or row.get(watermark_col.lower())
+                or row.get("UPDATED_AT")
+                or row.get("updated_at")
+                or row.get("O_ORDERDATE")
+                or row.get("o_orderdate")
+            )
             occurred_dt = _parse_watermark_to_datetime(wm_raw)
 
             if max_watermark_dt is None or occurred_dt > max_watermark_dt:

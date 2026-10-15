@@ -45,10 +45,13 @@ def main() -> None:
     parser.add_argument("--topic", default=None, help="Target Kafka topic (e.g., switch.orders.events.v2)")
     parser.add_argument("--full-refresh", action="store_true", help="Bypass prior watermark and perform full initial refresh")
     parser.add_argument("--state-key", default=None, help="Isolated state persistence key (default: based on table or custom topic)")
+    parser.add_argument("--watermark-column", default=None, help="Watermark column name (override SNOWFLAKE_WATERMARK_COLUMN)")
 
     args = parser.parse_args()
 
     settings = get_settings()
+    if args.watermark_column:
+        settings.snowflake_watermark_column = args.watermark_column
     configure_logging(level=settings.log_level)
 
     storage_mode = args.storage or ("local" if args.mock else settings.sync_state_storage)

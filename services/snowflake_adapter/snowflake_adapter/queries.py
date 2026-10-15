@@ -14,6 +14,21 @@ def build_initial_sync_query(
     join_customer: bool = True,
 ) -> str:
     """Build SQL for bounded initial synchronization."""
+    extra_cols = ""
+    standard_cols = {
+        "O_ORDERKEY",
+        "O_CUSTKEY",
+        "O_ORDERSTATUS",
+        "O_TOTALPRICE",
+        "O_ORDERDATE",
+        "O_ORDERPRIORITY",
+        "O_CLERK",
+        "O_SHIPPRIORITY",
+        "O_COMMENT",
+    }
+    if watermark_column and watermark_column.upper() not in standard_cols:
+        extra_cols = f",\n    o.{watermark_column}"
+
     if join_customer and table.upper() == "ORDERS":
         return f"""
 SELECT
@@ -25,7 +40,7 @@ SELECT
     o.O_ORDERPRIORITY,
     o.O_CLERK,
     o.O_SHIPPRIORITY,
-    o.O_COMMENT,
+    o.O_COMMENT{extra_cols},
     c.C_CUSTKEY,
     c.C_NAME,
     c.C_PHONE,
@@ -57,6 +72,21 @@ def build_incremental_sync_query(
     join_customer: bool = True,
 ) -> str:
     """Build SQL for incremental synchronization querying delta rows above watermark."""
+    extra_cols = ""
+    standard_cols = {
+        "O_ORDERKEY",
+        "O_CUSTKEY",
+        "O_ORDERSTATUS",
+        "O_TOTALPRICE",
+        "O_ORDERDATE",
+        "O_ORDERPRIORITY",
+        "O_CLERK",
+        "O_SHIPPRIORITY",
+        "O_COMMENT",
+    }
+    if watermark_column and watermark_column.upper() not in standard_cols:
+        extra_cols = f",\n    o.{watermark_column}"
+
     if join_customer and table.upper() == "ORDERS":
         return f"""
 SELECT
@@ -68,7 +98,7 @@ SELECT
     o.O_ORDERPRIORITY,
     o.O_CLERK,
     o.O_SHIPPRIORITY,
-    o.O_COMMENT,
+    o.O_COMMENT{extra_cols},
     c.C_CUSTKEY,
     c.C_NAME,
     c.C_PHONE,

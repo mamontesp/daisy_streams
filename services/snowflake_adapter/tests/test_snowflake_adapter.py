@@ -257,3 +257,47 @@ def test_adapter_blue_green_migration_and_full_refresh(
     assert state_v1.source_table == "orders"
     assert state_v2.source_table == "orders_v2"
 
+
+def test_watermark_preserves_timestamp_hours_and_minutes(
+    test_settings: Settings,
+    minio_state_store: MinioStateStore,
+    memory_producer: InMemoryEventProducer,
+) -> None:
+    """Verify that when watermark column is UPDATED_AT with timestamps, hours and minutes are preserved."""
+    records_with_timestamps = [
+        {
+            "O_ORDERKEY": 8001,
+            "O_CUSTKEY": 100,
+            "O_ORDERSTATUS": "O",
+            "O_TOTALPRICE": 150.0,
+            "O_ORDERDATE": "2026-10-15",
+            "UPDATED_AT": "2026-10-15T15:45:30+00:00",
+        },
+        {
+            "O_ORDERKEY": 8002,
+            "O_CUSTKEY": 101,
+            "O_ORDERSTATUS": "O",
+            "O_TOTALPRICE": 250.0,
+            "O_ORDERDATE": "2026-10-15",
+            "UPDATED_AT": "2026-10-15T17:30:15+00:00",
+        },
+    ]
+    test_settings.snowflake_watermark_column = "UPDATED_AT"
+    client = MockSnowflakeClient(initial_records=records_with_timestamps)
+    adapter = SnowflakeAdapter(
+        settings=test_settings,
+        client=client,
+        state_store=minio_state_store,
+        producer=memory_producer,
+    )
+
+    res = adapter.run_sync(table="ORDERS", batch_size=10000)
+    assert res.records_captured == 2
+    # Verify that the watermark preserves hour and minutes (17:30:15)
+    assert "2026-10-15T17:30:15" in res.current_watermark
+    assert res.current_watermark != "2026-10-15T00:00:00+00:00"
+
+    persisted = minio_state_store.load_state("orders")
+    assert persisted is not None
+    assert "2026-10-15T17:30:15" in persisted.last_watermark
+

@@ -34,6 +34,32 @@ def test_queries_include_custkey() -> None:
     assert "c.C_CUSTKEY" in inc_sql
 
 
+def test_queries_dynamically_project_custom_watermark_column() -> None:
+    """Verify build_initial_sync_query and build_incremental_sync_query dynamically project custom watermark column."""
+    init_sql = build_initial_sync_query(
+        database="daisy_streams",
+        schema="ingestion",
+        table="ORDERS",
+        watermark_column="UPDATED_AT",
+        entity_key_column="O_ORDERKEY",
+        partition_key_column="O_CUSTKEY",
+    )
+    assert "o.UPDATED_AT" in init_sql
+    assert "ORDER BY o.UPDATED_AT ASC" in init_sql
+
+    inc_sql = build_incremental_sync_query(
+        database="daisy_streams",
+        schema="ingestion",
+        table="ORDERS",
+        watermark_column="UPDATED_AT",
+        entity_key_column="O_ORDERKEY",
+        partition_key_column="O_CUSTKEY",
+    )
+    assert "o.UPDATED_AT" in inc_sql
+    assert "WHERE o.UPDATED_AT > %(watermark)s" in inc_sql
+    assert "ORDER BY o.UPDATED_AT ASC" in inc_sql
+
+
 def test_kafka_producer_routes_by_partition_key() -> None:
     """Verify KafkaEventProducer routes messages using partition_key."""
     mock_inner = MagicMock()
